@@ -1,0 +1,24 @@
+[server]
+enableStaticServing = true
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#0b3b75"
+backgroundColor = "#f5f7fa"
+secondaryBackgroundColor = "#eef1f5"
+textColor = "#1a2433"
+linkColor = "#0b3b75"
+borderColor = "#dde3ea"
+showWidgetBorder = true
+baseFontSize = 14
+baseRadius = "4px"
+font = "Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+chartCategoricalColors = ["#1f5fbf", "#e07a2e", "#2a9d8f", "#8b5cc7", "#c9a227", "#b5508f"]
+
+[[theme.fontFaces]]
+family = "Pretendard"
+url = "app/static/PretendardVariable.woff2"
+weight = "100 900"
