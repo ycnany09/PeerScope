@@ -15,8 +15,9 @@ APP = str(ROOT / "app.py")
 UA = "Kim Jimin jimin@example.com"
 
 
-def run_app(monkeypatch, key="K", ua=UA):
+def run_app(monkeypatch, key="K", ua=UA, cache=None):
     monkeypatch.setattr(requests, "get", F.fake_get)
+    monkeypatch.setenv("PEERSCOPE_KR_CACHE", str(cache) if cache else "/nonexistent/kr.json.gz")
     at = AppTest.from_file(APP, default_timeout=60)
     if key is not None:
         at.secrets["DART_API_KEY"] = key

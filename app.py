@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import gzip
 import html
 import io
+import json
+import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -102,6 +105,17 @@ def load_company(key: str, corp: dict, year: int, prefer: str) -> dict:
     return dart.analyze_company(key, corp, year, prefer)
 
 
+KR_CACHE = os.environ.get("PEERSCOPE_KR_CACHE",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "kr_financials.json.gz"))
+
+
+@st.cache_data(show_spinner=False)
+def load_kr_cache(path: str, mtime: float) -> dict:
+    """collect_kr.py 로 한국 PC에서 미리 모은 국내 재무 데이터. (파일이 바뀌면 mtime 이 달라져 다시 읽음)"""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
 @st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
 def load_us_list(ua: str) -> list[dict]:
     return sec.fetch_tickers(ua)
@@ -187,8 +201,15 @@ show('<div class="appbar"><div class="in"><div class="brand"><span class="glyph"
      '<div class="src">출처: DART, SEC EDGAR</div></div></div>')
 
 KEY = get_key()
-CORPS, kr_msg = [], ""
-if not KEY:
+CORPS, kr_msg, KR = [], "", None
+if os.path.exists(KR_CACHE):
+    try:
+        KR = load_kr_cache(KR_CACHE, os.path.getmtime(KR_CACHE))
+        CORPS = KR["corps"]
+    except Exception:
+        KR = None
+        kr_msg = "국내 데이터 파일(data/kr_financials.json.gz)을 읽지 못했습니다. 수집기를 다시 실행해 올려 주세요."
+elif not KEY:
     kr_msg = "국내 기업을 조회하려면 Secrets에 DART_API_KEY(DART 오픈API 인증키)를 추가하세요."
 else:
     try:
@@ -227,9 +248,12 @@ with st.form("pick"):
     year = c1.selectbox("기준 사업연도", YEARS, index=YEARS.index(dy) if dy in YEARS else 0,
                         help="사업보고서(연간) 기준. 기준연도를 포함해 5개년을 조회합니다. "
                              "미국 기업은 결산일이 속한 회계연도 기준입니다 (1~3월 결산은 직전 연도).")
-    basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True,
-                     help="연결: 종속회사 포함 / 개별: 해당 법인 단독")
+    basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True, disabled=KR is not None,
+                     help=("수집 데이터는 연결재무제표 우선 기준입니다 (연결이 없으면 개별)." if KR is not None
+                           else "연결: 종속회사 포함 / 개별: 해당 법인 단독"))
     go_btn = c3.form_submit_button("조회", type="primary", width="stretch")
+    if KR is not None:
+        st.caption(f"국내 데이터: {KR['collected_at'][:10]} 수집, {KR['base_year']}년 사업보고서까지 반영")
     for msg in (kr_msg, us_msg):
         if msg:
             st.caption(msg)
@@ -248,12 +272,17 @@ if go_btn:
         nm = comp["name"] if mk == "KR" else comp["title"]
         bar.progress(i / len(jobs), text=f"{nm} 재무제표 조회 중")
         try:
-            if mk == "KR":
+            if mk == "KR" and KR is not None:
+                entry = KR["companies"].get(comp["code"])
+                if entry is None:
+                    raise dart.DartError("CACHE", "수집 데이터에 없는 회사입니다. 수집기를 다시 실행하면 추가됩니다.")
+                cos.append(dart.company_from_cache(entry, comp, int(year), int(KR["base_year"])))
+            elif mk == "KR":
                 cos.append(load_company(KEY, comp, int(year), "CFS" if basis == "연결 우선" else "OFS"))
             else:
                 cos.append(load_us(UA, comp, int(year)))
         except dart.DartError as ex:
-            if mk == "US":
+            if mk == "US" or ex.status in ("CACHE", "ERR"):
                 why = ex.message
             elif ex.status == "013":
                 why = f"{year}년 사업보고서 재무제표가 DART에 없습니다 (금융업·신규 상장사는 제공되지 않을 수 있음)"
@@ -317,7 +346,8 @@ def co_cell(c) -> str:
 
 # ───────────── 보고서 머리 + 통화 전환 ─────────────
 
-basis_txt = "국내는 연결재무제표 우선" if res.get("basis", "연결 우선") == "연결 우선" else "국내는 개별재무제표"
+basis_txt = ("국내는 연결재무제표 우선" if KR is not None or res.get("basis", "연결 우선") == "연결 우선"
+             else "국내는 개별재무제표")
 show(f'<div class="rhead"><div class="rtitle">{year} 회계연도 재무 비교</div>'
      f'<div class="rsub">{e(", ".join(names))} / {len(cos)}개사 / {basis_txt}</div></div>')
 

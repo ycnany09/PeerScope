@@ -293,3 +293,44 @@ def ranking(cos: list[dict]) -> list[dict]:
                     "best": (cos[b]["name"], vals[b]) if b >= 0 else None,
                     "worst": (cos[w]["name"], vals[w]) if b >= 0 and many and w != b else None})
     return out
+
+
+# ───────────── 수집 데이터(캐시) ─────────────
+# DART는 해외 서버의 접속을 막아서, 한국 PC에서 collect_kr.py 로 미리 모은 파일을 앱이 읽는다.
+
+def cache_entry(res: dict) -> dict:
+    """analyze_company 결과 → 파일에 저장할 작은 형태."""
+    return {
+        "status": "ok", "fs": res["fs"], "fell_back": res["fell_back"],
+        "years": {str(y): v["amount"] for y, v in res["years"].items() if v["amount"]},
+        "accounts": {k: (None if a is None else {"id": a["id"], "nm": a["nm"]}) for k, a in res["accounts"].items()},
+        "src": {str(y): r for y, r in res["src"].items() if r},
+    }
+
+
+def company_from_cache(entry: dict, corp: dict, year: int, base_year: int) -> dict:
+    """저장된 항목으로 year 기준 5개년 결과를 만든다 (analyze_company 와 같은 모양)."""
+    if entry.get("status") == "nodata":
+        raise DartError("013", "조회된 데이터가 없습니다.")
+    if entry.get("status") != "ok":
+        raise DartError("ERR", entry.get("message", "수집 중 오류가 있었던 회사입니다."))
+    if year > base_year:
+        raise DartError("CACHE", f"국내 데이터는 {base_year}년 사업보고서까지 수집되어 있습니다. 수집기를 다시 실행하면 갱신됩니다.")
+    stored = {int(y): v for y, v in entry["years"].items()}
+    if not stored.get(year):
+        raise DartError("013", "조회된 데이터가 없습니다.")
+    years = {y: dict(stored.get(y, {})) for y in range(year - 4, year + 1)}
+    yr = {y: {"amount": years[y], "ratio": ratios(years[y], years.get(y - 1))} for y in sorted(years)}
+    accounts = {m["key"]: entry["accounts"].get(m["key"]) for m in METRICS}
+    src = {int(y): r for y, r in entry.get("src", {}).items()}
+    gaps = [y for y in sorted(years) if not years[y]]
+    return {
+        "name": corp["name"], "code": corp["code"], "stock": corp.get("stock", ""),
+        "fs": entry["fs"], "year": year, "years": yr, "src": src, "accounts": accounts,
+        "missing": [METRIC_LABEL[k] for k, a in accounts.items() if a is None],
+        "older_note": (", ".join(map(str, gaps)) + "년 수치 없음") if gaps else "",
+        "fell_back": entry["fell_back"],
+        "market": "KR", "currency": "KRW", "standard": "K-IFRS",
+        "period_end": {y: f"{y}-12-31" for y in yr if yr[y]["amount"]},
+        "links": {y: VIEW + r for y, r in src.items() if r},
+    }
