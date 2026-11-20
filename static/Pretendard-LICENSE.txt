@@ -1,0 +1,4 @@
+PretendardVariable.woff2 — Pretendard (https://github.com/orioncactus/pretendard)
+Pretendard는 SIL 오픈 폰트 라이선스 1.1(SIL Open Font License 1.1)로 배포됩니다.
+글꼴 단독 판매를 제외한 상업적 이용, 수정, 재배포가 가능합니다.
+라이선스 전문: https://openfontlicense.org
