@@ -1,4 +1,4 @@
-"""경쟁사 재무 비교 — Streamlit 웹앱
+"""피어스코프(PeerScope) — 경쟁사 재무 비교 Streamlit 웹앱
 
 회사를 고르면 DART 사업보고서 숫자로 수익성·성장성·안정성을 비교하고,
 5개년 추이와 ROE 분해(듀폰 분석)까지 보여 준다.
@@ -17,7 +17,7 @@ import dart
 import fx
 import sec
 
-st.set_page_config(page_title="경쟁사 재무 비교", layout="wide")
+st.set_page_config(page_title="피어스코프 | 경쟁사 재무 비교", layout="wide")
 
 # 회사 순서대로 고정 배정되는 색 (색은 순위가 아니라 회사를 따라간다). 색각 이상 검증 통과한 6색.
 PALETTE = ["#1f5fbf", "#e07a2e", "#2a9d8f", "#8b5cc7", "#c9a227", "#b5508f"]
@@ -183,7 +183,7 @@ def style_fig(fig: go.Figure, y_fmt: str, height: int = 360) -> go.Figure:
 
 show(CSS)
 show('<div class="appbar"><div class="in"><div class="brand"><span class="glyph"><i></i><i></i><i></i></span>'
-     '<b>경쟁사 재무 비교</b><span class="desc">국내·미국 공시 기반 동종업계 재무지표 분석</span></div>'
+     '<b>피어스코프</b><span class="desc">국내·미국 공시 기반 동종업계 재무지표 분석</span></div>'
      '<div class="src">출처: DART, SEC EDGAR</div></div></div>')
 
 KEY = get_key()
@@ -403,7 +403,7 @@ def excel_bytes() -> bytes:
 
 
 with cdl:
-    st.download_button("엑셀 내려받기", excel_bytes(), file_name=f"경쟁사재무비교_{year}.xlsx",
+    st.download_button("엑셀 내려받기", excel_bytes(), file_name=f"피어스코프_재무비교_{year}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
 
