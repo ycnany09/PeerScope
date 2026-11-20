@@ -34,16 +34,28 @@ def md(at):
     return " ".join(m.value for m in at.markdown)
 
 
-def test_no_key(monkeypatch):
+def test_no_key_us_still_works(monkeypatch):
     at = run_app(monkeypatch, key=None)
     assert not at.exception
-    assert "인증키가 설정되지 않았습니다" in at.error[0].value
+    assert at.multiselect[0].disabled and not at.multiselect[1].disabled
+    assert any("DART_API_KEY" in c.value for c in at.caption)
+    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.selectbox[0].set_value(2025)
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    assert "2025 회계연도 재무 비교" in md(at) and "MICRON TECHNOLOGY INC / 1개사" in md(at)
+
+
+def test_no_keys_at_all(monkeypatch):
+    at = run_app(monkeypatch, key=None, ua=None)
+    assert not at.exception
+    assert at.multiselect[0].disabled and at.multiselect[1].disabled
 
 
 def test_bad_key(monkeypatch):
     at = run_app(monkeypatch, key="BAD")
     assert not at.exception
-    assert "등록되지 않은 키" in at.error[0].value
+    assert any("등록되지 않은 키" in c.value for c in at.caption)
 
 
 def test_first_screen(monkeypatch):
@@ -157,3 +169,11 @@ def test_kr_us_currency(monkeypatch):
     assert "연도별 환율 적용" in t
     # 자산은 결산일(2025-08-28, 목) 환율
     assert f"<td>{eok_str(82.8e9 * F.usdkrw('2025-08-28'))}</td>" in t
+
+
+def test_dart_blocked_key_hidden_us_works(monkeypatch):
+    at = run_app(monkeypatch, key="DOWN")
+    assert not at.exception
+    caps = " ".join(c.value for c in at.caption)
+    assert "해외 서버" in caps and "crtfc_key" not in caps and "DOWN" not in caps
+    assert at.multiselect[0].disabled and not at.multiselect[1].disabled

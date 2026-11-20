@@ -14,7 +14,20 @@ import requests
 
 API = "https://opendart.fss.or.kr/api/"
 VIEW = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo="
-TIMEOUT = 30
+TIMEOUT = (10, 60)  # (접속 대기, 응답 대기) 초
+NET_MSG = "DART 서버에 연결하지 못했습니다. DART는 해외 서버의 접속을 막고 있어, 해외에 있는 서버에서는 연결되지 않을 수 있습니다."
+
+
+def scrub(text) -> str:
+    """오류 문구에 인증키가 섞여 나오지 않게 가린다."""
+    return re.sub(r"(crtfc_key=)[^&\s'\"]+", r"\1***", str(text))
+
+
+def _get(http, url, params, timeout):
+    try:
+        return http.get(url, params=params, timeout=timeout)
+    except requests.RequestException:
+        raise DartError("NET", NET_MSG) from None
 
 # 가져올 계정. DART 표준 계정 ID를 먼저 찾고, 없으면 계정 이름으로 찾는다.
 METRICS = [
@@ -68,8 +81,9 @@ class DartError(Exception):
 
 def fetch_corp_list(key: str, http=requests) -> list[dict]:
     """DART 전체 회사 목록(고유번호 파일)을 받아 [{code, name, eng, stock}] 로 돌려준다."""
-    res = http.get(API + "corpCode.xml", params={"crtfc_key": key}, timeout=60)
-    res.raise_for_status()
+    res = _get(http, API + "corpCode.xml", {"crtfc_key": key}, TIMEOUT)
+    if res.status_code >= 400:
+        raise DartError(f"HTTP {res.status_code}", "DART 회사 목록 요청이 거절되었습니다.")
     data = res.content
     if not zipfile.is_zipfile(io.BytesIO(data)):
         raise DartError(*_error_from_text(data.decode("utf-8", "replace")))
@@ -110,9 +124,9 @@ def fetch_statements(key: str, corp_code: str, year: int, order: tuple[str, ...]
     돌려주는 값: (사용한 구분, 행 목록)"""
     last = ("013", "조회된 데이터가 없습니다.")
     for fs in order:
-        res = http.get(API + "fnlttSinglAcntAll.json", params={
+        res = _get(http, API + "fnlttSinglAcntAll.json", {
             "crtfc_key": key, "corp_code": corp_code, "bsns_year": str(year),
-            "reprt_code": "11011", "fs_div": fs}, timeout=TIMEOUT)
+            "reprt_code": "11011", "fs_div": fs}, TIMEOUT)
         try:
             j = res.json()
         except ValueError:

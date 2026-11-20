@@ -124,3 +124,17 @@ def test_ranking():
     assert r["op_margin"]["best"] == ("하이브", 0.15) and r["op_margin"]["worst"][0] == "씨제이이엔엠"
     assert r["debt"]["best"][0] == "하이브"
     assert r["current"]["best"][0] == "씨제이이엔엠" and r["current"]["worst"] is None
+
+
+def test_network_error_hides_key():
+    import requests as rq
+
+    class Down:
+        @staticmethod
+        def get(url, params=None, timeout=None):
+            raise rq.ConnectTimeout(f"Max retries exceeded with url: /api/corpCode.xml?crtfc_key={params['crtfc_key']}")
+    with pytest.raises(dart.DartError) as e:
+        dart.fetch_corp_list("SECRETKEY1234", http=Down)
+    assert e.value.status == "NET" and "SECRETKEY1234" not in str(e.value)
+    assert "SECRET" not in dart.scrub("url?crtfc_key=SECRETKEY1234&corp_code=1")
+    assert dart.scrub("url?crtfc_key=SECRETKEY1234&corp_code=1") == "url?crtfc_key=***&corp_code=1"

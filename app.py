@@ -187,20 +187,18 @@ show('<div class="appbar"><div class="in"><div class="brand"><span class="glyph"
      '<div class="src">출처: DART, SEC EDGAR</div></div></div>')
 
 KEY = get_key()
+CORPS, kr_msg = [], ""
 if not KEY:
-    st.error("DART 인증키가 설정되지 않았습니다. Streamlit 앱 설정의 Secrets에 "
-             '`DART_API_KEY = "발급받은 키"`를 추가하세요.')
-    st.stop()
-
-try:
-    with st.spinner("DART 상장사 목록을 불러오는 중입니다."):
-        CORPS = load_corps(KEY)
-except dart.DartError as ex:
-    st.error(f"DART 회사 목록을 받지 못했습니다. {ex.message} (코드 {ex.status})")
-    st.stop()
-except Exception as ex:  # 네트워크 등
-    st.error(f"DART에 연결하지 못했습니다. {ex}")
-    st.stop()
+    kr_msg = "국내 기업을 조회하려면 Secrets에 DART_API_KEY(DART 오픈API 인증키)를 추가하세요."
+else:
+    try:
+        with st.spinner("DART 상장사 목록을 불러오는 중입니다."):
+            CORPS = load_corps(KEY)
+    except dart.DartError as ex:
+        kr_msg = (ex.message if ex.status == "NET"
+                  else f"DART 회사 목록을 받지 못했습니다. {ex.message} (코드 {ex.status})")
+    except Exception as ex:  # 그 밖의 오류 (인증키가 보이지 않게 가림)
+        kr_msg = f"DART 회사 목록을 처리하지 못했습니다. {dart.scrub(ex)}"
 
 LABEL = {f"{c['name']} ({c['stock']})": c for c in CORPS}
 UA = secret("SEC_USER_AGENT")
@@ -211,7 +209,7 @@ else:
     try:
         US_LABEL = {f"{c['title']} ({c['ticker']})": c for c in load_us_list(UA)}
     except Exception as ex:
-        us_msg = f"SEC 기업 목록을 받지 못했습니다. ({ex})"
+        us_msg = f"SEC 기업 목록을 받지 못했습니다. ({dart.scrub(ex)})"
 
 this_year = date.today().year
 YEARS = list(range(this_year - 1, 2018, -1))  # 5개년을 보려면 기준연도는 2019년부터
@@ -219,7 +217,8 @@ YEARS = list(range(this_year - 1, 2018, -1))  # 5개년을 보려면 기준연�
 with st.form("pick"):
     m1, m2 = st.columns(2)
     picked = m1.multiselect("국내 기업 (DART)", list(LABEL), max_selections=MAX_CO,
-                            placeholder="회사명 또는 종목코드 검색")
+                            placeholder="회사명 또는 종목코드 검색", disabled=not LABEL,
+                            help=kr_msg or "DART에 사업보고서를 내는 국내 상장사")
     picked_us = m2.multiselect("미국 상장 기업 (SEC)", list(US_LABEL), max_selections=MAX_CO,
                                placeholder="영문 회사명 또는 티커 검색 (예: MU, AAPL)",
                                disabled=not US_LABEL, help=us_msg or "미국 SEC에 연간 보고서를 내는 기업")
@@ -231,8 +230,9 @@ with st.form("pick"):
     basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True,
                      help="연결: 종속회사 포함 / 개별: 해당 법인 단독")
     go_btn = c3.form_submit_button("조회", type="primary", width="stretch")
-    if us_msg:
-        st.caption(us_msg)
+    for msg in (kr_msg, us_msg):
+        if msg:
+            st.caption(msg)
 
 if go_btn:
     total = len(picked) + len(picked_us)
@@ -261,7 +261,7 @@ if go_btn:
                 why = f"DART 오류 {ex.status}: {ex.message}"
             errors.append((nm, why))
         except Exception as ex:
-            errors.append((nm, f"연결 오류: {ex}"))
+            errors.append((nm, f"연결 오류: {dart.scrub(ex)}"))
     bar.empty()
     st.session_state["result"] = {"cos": cos, "errors": errors, "year": int(year), "basis": basis}
 

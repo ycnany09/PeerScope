@@ -85,6 +85,9 @@ CALLS = []
 def fake_get(url, params=None, timeout=None):
     CALLS.append((url, dict(params or {})))
     if url.endswith("corpCode.xml"):
+        if params.get("crtfc_key") == "DOWN":
+            import requests as _rq
+            raise _rq.ConnectTimeout(f"Max retries exceeded with url: /api/corpCode.xml?crtfc_key=DOWN")
         if params.get("crtfc_key") == "BAD":
             return Resp(b"<result><status>010</status><message>\xeb\x93\xb1\xeb\xa1\x9d\xeb\x90\x98\xec\xa7\x80 \xec\x95\x8a\xec\x9d\x80 \xed\x82\xa4\xec\x9e\x85\xeb\x8b\x88\xeb\x8b\xa4.</message></result>")
         return Resp(zipped(XML))
