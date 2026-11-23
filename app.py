@@ -280,8 +280,11 @@ with st.form("pick"):
                                disabled=not US_LABEL, help=us_msg or "미국 SEC에 연간 보고서를 내는 기업")
     c1, c2, _, c3 = st.columns([2, 2.4, 4, 1.6], vertical_alignment="bottom")
     dy = default_year()
-    year = c1.selectbox("기준 사업연도", YEARS, index=YEARS.index(dy) if dy in YEARS else 0,
-                        help="사업보고서(연간) 기준. 기준연도를 포함해 5개년을 조회합니다. "
+    PERIODS = ["TTM"] + YEARS
+    year = c1.selectbox("기준 기간", PERIODS, index=0,
+                        format_func=lambda v: "최근 4개 분기 (최신)" if v == "TTM" else f"{v} 사업연도",
+                        help="최근 4개 분기: 가장 최근 분기까지 1년 실적(TTM)으로 비교합니다. "
+                             "사업연도: 1년 실적 보고서 기준이며, 그해를 포함해 5개년 추이를 보여 줍니다. "
                              "미국 기업은 결산일이 속한 회계연도 기준입니다 (1~3월 결산은 직전 연도).")
     basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True, disabled=KR is not None,
                      help=("수집 데이터는 연결재무제표 우선 기준입니다 (연결이 없으면 개별)." if KR is not None
@@ -302,6 +305,8 @@ if go_btn:
         st.session_state.pop("result", None)
         st.stop()
     jobs = [("KR", LABEL[lb]) for lb in picked] + [("US", US_LABEL[lb]) for lb in picked_us]
+    mode = "TTM" if year == "TTM" else "annual"
+    year = default_year() if year == "TTM" else int(year)  # 연간 데이터 기준연도 (TTM 이면 가장 최근 사업연도)
     cos, errors = [], []
     bar = st.progress(0.0, text="재무제표 조회 중")
     for i, (mk, comp) in enumerate(jobs):
@@ -333,7 +338,7 @@ if go_btn:
         except Exception as ex:
             errors.append((nm, f"연결 오류: {dart.scrub(ex)}"))
     bar.empty()
-    st.session_state["result"] = {"cos": cos, "errors": errors, "year": int(year), "basis": basis}
+    st.session_state["result"] = {"cos": cos, "errors": errors, "year": int(year), "basis": basis, "mode": mode}
 
 res = st.session_state.get("result")
 if not res:
@@ -341,11 +346,61 @@ if not res:
          '같은 업종의 경쟁사끼리 비교할 때 가장 의미 있는 결과가 나옵니다. 국내와 미국 기업을 함께 고를 수 있습니다.</div>')
     st.stop()
 
-cos: list[dict] = res["cos"]
-year: int = res["year"]
+cos_annual: list[dict] = res["cos"]
+year_annual: int = res["year"]
+MODE = res.get("mode", "annual")
+
+
+def _qend(c, lb):
+    q = c.get("quarters") or {}
+    return (q.get("period_end") or {}).get(lb) or (quarter.kr_quarter_end(lb) if c["market"] == "KR" else None)
+
+
+def ttm_view(c, key: int):
+    """회사 c 를 '최근 4개 분기 합계' 기준으로 바꾼 사본. 연간 화면 코드를 그대로 쓰도록 같은 모양으로 만든다."""
+    qd = c.get("quarters")
+    t = quarter.ttm(qd) if qd else None
+    if not t:
+        return None
+    latest = qd["latest"]
+    prev_latest = quarter.shift(latest, -4)
+    prev = {}
+    for k_ in quarter.FLOW:
+        vs = [qd["q"].get(lb, {}).get(k_) for lb in quarter.last_n(prev_latest, 4)]
+        if all(v is not None for v in vs):
+            prev[k_] = sum(vs)
+    for k_ in quarter.STOCK:
+        v = qd["q"].get(prev_latest, {}).get(k_)
+        if v is not None:
+            prev[k_] = v
+    pe = _qend(c, latest)
+    pe_prev = _qend(c, prev_latest) or (pe and str(int(pe[:4]) - 1) + pe[4:])
+    v = dict(c)
+    v["years"] = {key: {"amount": t["amount"], "ratio": t["ratio"]},
+                  key - 1: {"amount": prev, "ratio": dart.ratios(prev, None)}}
+    v["period_end"] = {y_: d for y_, d in ((key, pe), (key - 1, pe_prev)) if d}
+    v["year"] = key
+    v["ttm_period"] = f"{quarter.shift(latest, -3)}~{latest}"
+    return v
+
+
+if MODE == "TTM":
+    year = date.today().year
+    cos, no_ttm = [], []
+    for c in cos_annual:
+        tv = ttm_view(c, year)
+        (cos.append(tv) if tv else no_ttm.append(c["name"]))
+else:
+    cos, year, no_ttm = cos_annual, year_annual, []
+
+def qname_(lb: str) -> str:
+    y_, q_ = quarter.parse(lb)
+    return f"{y_} {q_}Q"
+
 
 # 조회 실패·참고 사항
 msgs = [f"<b>{e(n)}</b> 조회 제외: {e(w)}" for n, w in res["errors"]]
+msgs += [f"<b>{e(n)}</b> 최근 4개 분기 데이터가 없어 이 보기에서 제외 (사업연도 보기에서는 표시)" for n in no_ttm]
 for c in cos:
     n = []
     if c["fell_back"]:
@@ -355,7 +410,9 @@ for c in cos:
     if c["older_note"]:
         n.append(c["older_note"])
     pe = c["period_end"].get(year, "")
-    if c["market"] == "US" and pe and not pe.endswith("-12-31"):
+    if MODE == "TTM":
+        n.append("기간 " + "~".join(qname_(x) for x in c["ttm_period"].split("~")))
+    elif c["market"] == "US" and pe and not pe.endswith("-12-31"):
         n.append(f"결산일 {pe}")
     if n:
         msgs.append(f"<b>{e(c['name'])}</b> " + " / ".join(e(x) for x in n))
@@ -366,9 +423,9 @@ if msgs:
 if not cos:
     st.stop()
 
-COLOR = {c["name"]: PALETTE[i % len(PALETTE)] for i, c in enumerate(cos)}
+COLOR = {c["name"]: PALETTE[i % len(PALETTE)] for i, c in enumerate(cos_annual)}
 names = [c["name"] for c in cos]
-YRS = sorted(cos[0]["years"])
+YRS = sorted(cos_annual[0]["years"])
 AMT_KEYS = ("rev", "op", "net", "assets", "liab", "equity")
 
 
@@ -389,7 +446,10 @@ def co_cell(c) -> str:
 
 basis_txt = ("국내는 연결재무제표 우선" if KR is not None or res.get("basis", "연결 우선") == "연결 우선"
              else "국내는 개별재무제표")
-show(f'<div class="rhead"><div class="rtitle">{year} 회계연도 재무 비교</div>'
+_periods = sorted({c.get("ttm_period", "") for c in cos})
+_ptxt = ("~".join(qname_(x) for x in _periods[0].split("~")) if len(_periods) == 1 and _periods[0]
+         else "회사별 가장 최근 4개 분기")
+show(f'<div class="rhead"><div class="rtitle">{"최근 4개 분기 재무 비교 (" + _ptxt + ")" if MODE == "TTM" else str(year) + " 회계연도 재무 비교"}</div>'
      f'<div class="rsub">{e(", ".join(names))} / {len(cos)}개사 / {basis_txt}</div></div>')
 
 cc1, cc2, _, cdl = st.columns([2.2, 2.8, 3, 1.4], vertical_alignment="bottom")
@@ -501,14 +561,14 @@ trend = pd.DataFrame([{
     "회사": c["name"], "연도": y,
     **{f"{dart.METRIC_LABEL[k]}({UNIT})": None if conv(c, k, y) is None else conv(c, k, y) / DIV for k in ("rev", "op", "net")},
     **{x["label"]: c["years"][y]["ratio"][x["key"]] for x in dart.RATIOS},
-} for c in cos for y in YRS])
+} for c in cos_annual for y in YRS])
 raw = pd.DataFrame([{
     "회사": c["name"], "통화": c["currency"], "항목": m["label"],
     "계정 ID": (c["accounts"][m["key"]] or {}).get("id", ""),
     "계정명": (c["accounts"][m["key"]] or {}).get("nm", "(미확인)"),
     **{str(y): c["years"][y]["amount"].get(m["key"]) for y in reversed(YRS)},
-    "공시 원문": c["links"].get(year, ""),
-} for c in cos for m in dart.METRICS])
+    "공시 원문": c["links"].get(year_annual, ""),
+} for c in cos_annual for m in dart.METRICS])
 
 
 def excel_bytes() -> bytes:
@@ -567,10 +627,13 @@ for c in cos:
         f'<td>{n_pct(now["op_margin"])}</td><td>{delta(dd("op_margin"), "%p")}</td>'
         f'<td>{n_pct(now["debt"])}</td><td>{delta(dd("debt"), "%p")}</td>'
         f'<td>{n_pct(now["roe"])}</td></tr>')
-kpi = ('<table class="grid"><thead><tr>' + th("회사", left=True) + th("기준") + th("매출액", UNIT) + th("전년비")
-       + th("영업이익", UNIT) + th("영업이익률") + th("전년비") + th("부채비율") + th("전년비") + th("ROE")
+_vs = "직전 4개 분기 대비" if MODE == "TTM" else "전년비"
+kpi = ('<table class="grid"><thead><tr>' + th("회사", left=True) + th("기준") + th("매출액", UNIT) + th(_vs)
+       + th("영업이익", UNIT) + th("영업이익률") + th(_vs) + th("부채비율") + th(_vs) + th("ROE")
        + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
-note = "▲ 상승 ▼ 하락 (전년 대비). 비율 증감은 %p 단위이며, 성장률과 비율은 각 회사의 보고 통화 기준입니다."
+note = ("▲ 상승 ▼ 하락 (" + ("직전 4개 분기 합계 대비" if MODE == "TTM" else "전년 대비") + "). "
+        "비율 증감은 %p 단위이며, 성장률과 비율은 각 회사의 보고 통화 기준입니다."
+        + (" 부채비율·ROE는 최근 분기말 잔액 기준입니다." if MODE == "TTM" else ""))
 fxn = fx_note()
 show(panel("주요 지표", kpi, note + (f"<br>{e(fxn)}" if fxn else "")))
 
@@ -630,7 +693,7 @@ with tab3:
         show(f'<div class="ptitle" style="padding:2px 0 0">{e(pick)} 추이 <span style="font-weight:400;color:{SUB};font-size:12px">'
              f'({e(unit)})</span></div>')
         fig = go.Figure()
-        for c in cos:
+        for c in cos_annual:
             fig.add_trace(go.Scatter(
                 x=[str(y) for y in YRS], y=[val(c, y) for y in YRS], name=c["name"], mode="lines+markers",
                 line=dict(width=2, color=COLOR[c["name"]]), marker=dict(size=7, color=COLOR[c["name"]]),
@@ -638,10 +701,14 @@ with tab3:
         fig.update_layout(hovermode="x unified")
         st.plotly_chart(style_fig(fig, ",.0f" if is_amt else ".0%"), width="stretch", config={"displayModeBar": False})
         fmt = (lambda v: "–" if v is None else f"{v:,.0f}") if is_amt else n_pct
-        tr = "".join(f"<tr>{co_cell(c)}" + "".join(f"<td>{fmt(val(c, y))}</td>" for y in YRS) + "</tr>" for c in cos)
+        tr = "".join(f"<tr>{co_cell(c)}" + "".join(f"<td>{fmt(val(c, y))}</td>" for y in YRS) + "</tr>" for c in cos_annual)
         show(f'<div class="scroll"><table class="grid"><thead><tr>{th("회사", left=True)}'
              + "".join(th(str(y)) for y in YRS) + f"</tr></thead><tbody>{tr}</tbody></table></div>")
-    st.caption("국내 기업은 기준연도와 2년 전 사업보고서, 미국 기업은 연간 보고서(10-K 등)의 수치로 구성했습니다. "
+    if MODE == "TTM":
+        seg_note = f"연간 실적(사업보고서) 기준 {YRS[0]}~{YRS[-1]}년 추이입니다. "
+    else:
+        seg_note = ""
+    st.caption(seg_note + "국내 기업은 기준연도와 2년 전 사업보고서, 미국 기업은 연간 보고서(10-K 등)의 수치로 구성했습니다. "
                "같은 연도가 여러 보고서에 있으면 가장 최근에 제출된 수치를 사용합니다.")
 
 with tab4:
@@ -954,8 +1021,8 @@ with tab5:
     head = (th("회사", left=True) + th("통화") + th("항목", left=True) + th("계정 ID", left=True) + th("계정명", left=True)
             + "".join(th(str(y)) for y in reversed(YRS)) + th("공시 원문"))
     body = []
-    for c in cos:
-        url = c["links"].get(year)
+    for c in cos_annual:
+        url = c["links"].get(year_annual)
         link = f'<a href="{e(url)}" target="_blank" rel="noopener">보기</a>' if url else "–"
         for m in dart.METRICS:
             acc = c["accounts"][m["key"]]
@@ -965,7 +1032,7 @@ with tab5:
                 + "".join(f"<td>{n_won(c['years'][y]['amount'].get(m['key']))}</td>" for y in reversed(YRS))
                 + f"<td>{link}</td></tr>")
     show(panel("", f'<table class="grid"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>',
-               "공시 수치를 환율 변환 없이 각 회사의 보고 통화 그대로 표시합니다. 공시 원문 링크는 기준연도 보고서입니다."))
+               "공시 수치를 환율 변환 없이 각 회사의 보고 통화 그대로 표시합니다. 연간 실적(사업보고서) 기준이며, 공시 원문 링크는 기준연도 보고서입니다."))
 
 show('<div class="foot">데이터 출처: 금융감독원 전자공시시스템(DART) 오픈API, 미국 증권거래위원회(SEC) EDGAR, '
      '환율은 유럽중앙은행 기준환율(Frankfurter API), 주가는 금융위원회 주식시세정보·Twelve Data.<br>'

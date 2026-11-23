@@ -164,10 +164,10 @@ def collect_quarterly(key: str, latest: str, annual: dict, http=requests, out: s
                       pause: float = 0.3, log=print) -> dict:
     """연간 수집 데이터가 있는 회사만 분기 보고서를 추가로 받는다."""
     corps = [c for c in annual["corps"] if annual["companies"].get(c["code"], {}).get("status") == "ok"]
-    state = {"latest": latest, "companies": {}}
+    state = {"latest": latest, "version": quarter.PLAN_VERSION, "companies": {}}
     if os.path.exists(part):
         old = json.load(open(part, encoding="utf-8"))
-        if old.get("latest") == latest:
+        if old.get("latest") == latest and old.get("version") == quarter.PLAN_VERSION:
             state = old
             log(f"      이전에 멈춘 곳부터 이어서 수집합니다. (완료 {len(state['companies'])}곳)")
 
@@ -176,7 +176,8 @@ def collect_quarterly(key: str, latest: str, annual: dict, http=requests, out: s
         return quarter.kr_quarters(key, c, latest, annual_years=a.get("years"), http=http, prefer=a.get("fs", "CFS"))
 
     _run(corps, state, part, fetch, pause, log, f"[분기] {latest}까지 분기 보고서 수집")
-    data = {"version": 1, "latest": latest, "collected_at": datetime.now(KST).isoformat(timespec="seconds"),
+    data = {"version": quarter.PLAN_VERSION, "latest": latest,
+            "collected_at": datetime.now(KST).isoformat(timespec="seconds"),
             "companies": state["companies"]}
     _write_gz(out, data)
     if os.path.exists(part):
@@ -207,7 +208,7 @@ def main(argv=None):
         else:
             print(f"연간 데이터는 이미 최신입니다 ({annual['base_year']}년 사업보고서까지). 건너뜁니다.")
         qd = _read_gz(QOUT)
-        if args.force or not qd or qd.get("latest") != args.quarter:
+        if args.force or not qd or qd.get("latest") != args.quarter or qd.get("version", 1) < quarter.PLAN_VERSION:
             collect_quarterly(key, args.quarter, annual)
         else:
             print(f"분기 데이터도 이미 최신입니다 ({qd['latest']}까지).")

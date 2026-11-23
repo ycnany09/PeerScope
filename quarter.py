@@ -13,6 +13,7 @@ import requests
 import dart
 import sec
 
+PLAN_VERSION = 2  # 수집 계획이 바뀌면 올림 → 수집기가 분기 데이터를 다시 받음
 FLOW = ("rev", "op", "net")
 STOCK = ("assets", "liab", "equity", "ca", "cl")
 QEND = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
@@ -67,6 +68,8 @@ def kr_plan(latest: str, have_fy: set[int]) -> list[tuple[int, int]]:
     need = [(t, k) for k in range(min(q, 3), 0, -1)]
     if q < 3:  # 전년도 남은 분기(3개월 금액·누적)는 전년 보고서에서
         need += [(t - 1, k) for k in range(3, q, -1)]
+    if q == 3:  # 전년 3분기 보고서 → 전전년 4분기 계산 → '직전 4개 분기 합계'(TTM 성장률)까지
+        need.append((t - 1, 3))
     # 4분기 계산에 필요한 연간 실적: t-1년(항상), t년(최신이 4분기일 때)
     if q == 4 and t not in have_fy:
         need.insert(0, (t, 4))          # t년 사업보고서에 t-1년 연간도 같이 들어 있음

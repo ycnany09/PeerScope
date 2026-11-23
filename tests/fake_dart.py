@@ -347,3 +347,24 @@ class FakeHttp:  # noqa: F811
 MU_FACTS["facts"]["us-gaap"]["LiabilitiesAndStockholdersEquity"]["units"]["USD"].append(
     {"end": "2025-05-29", "val": 78.0 * B, "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-06-26",
      "accn": "0000723125-25-000050"})
+
+
+# 2025년 3분기 보고서 (전전년 4분기 계산용): 2024년 분기 1.0/1.05/1.1 (9개월 3.15, 연간 4.5 → 4Q 1.35)
+CJ_Q24 = {"rev": (1.0, 1.05, 1.1), "op": (-0.02, -0.01, 0.01), "net": (-0.03, -0.04, -0.02)}
+
+
+def cj_q3_2025():
+    rows = []
+    for key, p in CJ_Q24.items():
+        sj, i, nm = IDS[key]
+        c = CJ_Q[key][0]  # 2025년
+        rows.append(qrow(sj, i, nm, thstrm_amount=c[2], thstrm_add_amount=sum(c), frmtrm_q_amount=p[2],
+                         frmtrm_add_amount=sum(p), rc="20251114000444"))
+    for key in CJ_BS:
+        sj, i, nm = IDS[key]
+        rows.append(qrow(sj, i, nm, thstrm_amount=CJ_BS_YE25[key] * 0.98, frmtrm_amount=CJ_BS_YE25[key] * 0.95,
+                         rc="20251114000444"))
+    return rows
+
+
+QFIN[("00265324", "2025", "11014", "CFS")] = {"status": "000", "list": cj_q3_2025()}

@@ -46,14 +46,15 @@ def test_kr_quarters_with_annual_cache():
     assert q["2025Q1"]["rev"] == pytest.approx(1.1 * T)          # 1분기 보고서의 누적 칸 빈 경우 처리
     assert q["2025Q4"]["rev"] == pytest.approx((5.0 - 3.6) * T)  # 4분기 = 연간 − 3분기 누적
     assert q["2025Q4"]["op"] == pytest.approx((0.2 - 0.12) * T)
-    assert "2025Q4" in e["derived"] and "rev" not in q.get("2024Q4", {})  # 2024년 4분기는 기말 잔액만 있음
+    assert "2025Q4" in e["derived"] and "2024Q4" in e["derived"]
+    assert q["2024Q4"]["rev"] == pytest.approx((4.5 - 3.15) * T)   # 전년 3분기 보고서로 계산한 전전년 4분기
     assert q["2026Q2"]["assets"] == pytest.approx(10.4 * T) and q["2025Q4"]["equity"] == pytest.approx(4 * T)
     # 연간 데이터가 있으니 사업보고서는 다시 요청하지 않음
     assert all(p.get("reprt_code") != "11011" for _, p in F.CALLS if "fnlttSinglAcntAll" in _)
     t = quarter.ttm(e)
     assert t["amount"]["rev"] == pytest.approx((1.4 + 1.25 + 1.35 + 1.5) * T)
     assert t["ratio"]["roe"] == pytest.approx((0.03 + 0.04 + 0.04 + 0.05) / 4.3)
-    assert t["ratio"]["growth"] is None  # 직전 4개 분기 중 2024Q4가 없음
+    assert t["ratio"]["growth"] == pytest.approx(5.5 / (1.35 + 1.1 + 1.2 + 1.3) - 1)  # 직전 4개 분기 대비
     assert quarter.yoy(e, "2026Q3", "rev") == pytest.approx(1.5 / 1.3 - 1)
     assert quarter.margin(e, "2026Q3") == pytest.approx(0.09 / 1.5)
 
@@ -147,10 +148,10 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     # 마이크론 최근 분기(2025 3Q) 매출 11.3B → 원화
     rate = round(F.usdkrw("2026-11-19"), 6)
     assert f"<td>{11.3e9 * rate / 1e8:,.0f}</td>" in t
-    # TTM: CJ 55,000억, 마이크론 성장률 ▲ 49.0%
-    assert "<td>55,000</td>" in t and "▲ 49.0%" in t
+    # TTM: CJ 55,000억 (직전 4개 분기 대비 ▲ 11.1%), 마이크론 성장률 ▲ 49.0%
+    assert "<td>55,000</td>" in t and "▲ 49.0%" in t and "▲ 11.1%" in t
     caps = " ".join(c.value for c in at.caption)
-    assert "4분기(2024 3Q, 2025 3Q, 2025 4Q)는 연간 실적에서" in caps
+    assert "4분기(2024 3Q, 2024 4Q, 2025 3Q, 2025 4Q)는 연간 실적에서" in caps
     assert "분기 데이터 없음: 하이브" in " ".join(c.value for c in at.caption)
     # 주가: 국내는 키 있음 → 표, 미국은 키 없음 → 안내
     assert "Twelve Data 키(TWELVE_DATA_KEY)를 설정하면" in t and "1년 수익률" in t
@@ -190,3 +191,33 @@ def test_run_local_writes_keys_outside_project(tmp_path):
     import tomllib
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     assert data == {"DATA_GO_KR_KEY": "abc", "SEC_USER_AGENT": 'Jimin "J" Kim a@b.com'}
+
+
+def test_app_ttm_mode(tmp_path, monkeypatch):
+    annual = collect_kr.collect("K", 2025, http=H, out=str(tmp_path / "data" / "kr_financials.json.gz"),
+                                part=str(tmp_path / "p1.json"), pause=0, log=lambda *a: None)
+    collect_kr.collect_quarterly("K", "2026Q3", annual, http=H, out=str(tmp_path / "data" / "kr_quarterly.json.gz"),
+                                 part=str(tmp_path / "p2.json"), pause=0, log=lambda *a: None)
+    monkeypatch.setattr(requests, "get", F.fake_get)
+    monkeypatch.setenv("PEERSCOPE_KR_CACHE", str(tmp_path / "data" / "kr_financials.json.gz"))
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
+    at.run()
+    assert at.selectbox[0].value == "TTM"  # 기본값이 최근 4개 분기
+    at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)"])
+    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    t = " ".join(m.value for m in at.markdown)
+    assert "최근 4개 분기 재무 비교 (회사별 가장 최근 4개 분기)" in t
+    assert "직전 4개 분기 대비" in t
+    # 주요 지표: CJ TTM 매출 55,000억, 직전 4개 분기 대비 ▲ 11.1%, 영업이익률 3,000/55,000 = 5.5%
+    assert "<td>55,000</td>" in t and "▲ 11.1%" in t and "<td>5.5%</td>" in t
+    assert "<b>하이브</b> 최근 4개 분기 데이터가 없어 이 보기에서 제외" in t
+    assert "기간 2025 4Q~2026 3Q" in t and "기간 2024 4Q~2025 3Q" in t
+    # 5개년 추이는 연간 데이터 그대로 (하이브 포함)
+    assert any("연간 실적(사업보고서) 기준" in c.value for c in at.caption)
+    rate = round(F.usdkrw("2026-11-19"), 6)
+    assert f"<td>{37.4e9 * rate / 1e8:,.0f}</td>" in t  # 마이크론 TTM 매출 (= FY2025)
+    at.radio(key="rate_mode").set_value("연도별 환율").run()
+    assert not at.exception, at.exception
