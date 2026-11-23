@@ -11,6 +11,7 @@ import io
 import json
 import os
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -73,6 +74,9 @@ table.grid a{color:var(--brand);text-decoration:none;font-weight:600}
 .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:8px;vertical-align:1px}
 .notice{background:#fff8eb;border:1px solid #f1dcb3;border-radius:6px;padding:10px 14px;font-size:13px;color:#7a5410;margin:12px 0 0}
 .notice div+div{margin-top:4px}
+.pxlink{color:var(--brand);font-weight:600;text-decoration:none;border-bottom:1px solid var(--tint)}
+.pxlink:hover{border-bottom-color:var(--brand)}
+.pxlink:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:2px}
 .info{background:var(--panel);border:1px dashed var(--rule);border-radius:6px;padding:28px 18px;text-align:center;color:var(--sub);font-size:14px;margin-top:14px}
 .foot{font-size:12px;color:#8a94a3;margin-top:28px;border-top:1px solid var(--rule);padding-top:12px;line-height:1.7}
 .stTabs [data-baseweb="tab-list"]{gap:4px;border-bottom:1px solid var(--rule)}
@@ -1017,6 +1021,8 @@ with tab_pos:
                 if not rows_:
                     st.caption(f"{title}: 계산할 수 있는 회사가 없습니다.")
                     return
+                # 제목은 차트 밖(HTML)에 둔다: 차트 안 제목은 범례와 같은 자리에 겹쳐 그려짐
+                show(f'<div style="font-size:13px;font-weight:700;color:{INK};margin:6px 0 0">{e(title)}</div>')
                 f = go.Figure()
                 for i, (_, lab, colr) in enumerate(parts):
                     f.add_trace(go.Bar(
@@ -1025,7 +1031,7 @@ with tab_pos:
                         text=[f"{r[1][i] * 100:.0f}%" for r in rows_], textposition="inside", insidetextanchor="middle",
                         textfont=dict(color="white" if i == 0 else INK, size=12),
                         hovertemplate="%{y} " + lab + ": %{x:.1%}<extra></extra>"))
-                f.update_layout(barmode="stack", bargap=0.35, title=dict(text=title, font=dict(size=13, color=INK), x=0))
+                f.update_layout(barmode="stack", bargap=0.35)
                 f.update_layout(legend=dict(traceorder="normal"))
                 style_fig(f, ".0%", height=110 + 46 * len(rows_))
                 f.update_xaxes(type="linear", range=[0, 1], showgrid=False, showticklabels=False)
@@ -1039,9 +1045,26 @@ with tab_pos:
 
 with tab_px:
     KR_PX_KEY, US_PX_KEY = secret("DATA_GO_KR_KEY"), secret("TWELVE_DATA_KEY")
+    # 외부 시세 사이트 바로가기: 링크만 걸어서 데이터 재배포 없이 누구나 볼 수 있음
+    def px_links(c) -> str:
+        code = str(c.get("stock") or "").strip()
+        if not code:
+            return '<span class="flat">–</span>'
+        if c["market"] == "KR":
+            url, site = f"https://finance.naver.com/item/main.naver?code={quote(code)}", "네이버 증권"
+        else:
+            url, site = f"https://finance.yahoo.com/quote/{quote(code)}", "Yahoo Finance"
+        return f'<a class="pxlink" href="{e(url)}" target="_blank" rel="noopener">{site}에서 주가 보기</a>'
+
+    link_rows = "".join(f'<tr>{co_cell(c)}<td>{e(str(c.get("stock") or "–"))}</td>'
+                        f'<td class="l">{px_links(c)}</td></tr>' for c in cos_annual)
+    link_tbl = ('<table class="grid"><thead><tr>' + th("회사", left=True) + th("종목코드·티커")
+                + th("시세 사이트", left=True) + "</tr></thead><tbody>" + link_rows + "</tbody></table>")
     if not KR_PX_KEY and not US_PX_KEY:
-        show('<div class="info">주가는 데이터 제공처(한국거래소·Twelve Data)의 이용 조건상 공개 웹사이트에 표시할 수 없어, '
-             '<b>개인 PC에서 실행할 때만</b> 보입니다.<br>내 PC에서 <b>run_app.bat</b>을 실행하면 이 탭에 주가 차트가 나옵니다.</div>')
+        show(panel("주가 바로가기", link_tbl,
+                   "주가 차트는 데이터 제공처(한국거래소·Twelve Data)의 이용 조건상 공개 웹사이트에 직접 표시할 수 없어, "
+                   "외부 시세 사이트로 연결합니다. 링크는 새 창에서 열립니다. "
+                   "개인 PC에서 run_app.bat으로 실행하면 이 탭에 회사별 주가 수익률 비교 차트가 함께 나옵니다."))
     span = (st.radio("기간", ["3개월", "6개월", "1년", "3년"], index=2, horizontal=True, key="px_span",
                      label_visibility="collapsed") if (KR_PX_KEY or US_PX_KEY) else "1년")
     days = {"3개월": 92, "6개월": 183, "1년": 366, "3년": 1096}[span]
@@ -1120,6 +1143,7 @@ with tab_px:
             st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
             st.caption("빨강은 상승(종가 ≥ 시가), 파랑은 하락입니다. 가격은 각 시장 통화(원·달러) 그대로입니다.")
     if KR_PX_KEY or US_PX_KEY:
+        show(panel("주가 바로가기", link_tbl, "외부 시세 사이트로 연결합니다. 링크는 새 창에서 열립니다."))
         st.caption("국내 시세: 금융위원회 주식시세정보(공공데이터포털, 원천 한국거래소, 영업일 하루 뒤 공개). "
                    "미국 시세: Twelve Data 일봉. 수익률 비교는 통화와 관계없이 각 주가의 등락률입니다. "
                    "개인 분석용이며 데이터를 제3자에게 제공·재배포할 수 없습니다.")

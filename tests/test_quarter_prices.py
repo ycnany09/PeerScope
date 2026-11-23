@@ -159,6 +159,8 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     # 분기 지표·주가 기간 바꾸기
     at.radio(key="qpick").set_value("영업이익률").run()
     at.radio(key="px_span").set_value("3년").run()
+    t_ = " ".join(m.value for m in at.markdown)
+    assert 'href="https://finance.naver.com/item/main.naver?code=035760"' in t_  # 키가 있어도 바로가기 표시
     assert not at.exception, at.exception
     # 원화 → 달러
     at.radio(key="show_cur").set_value("달러로 표기").run()
@@ -178,7 +180,8 @@ def test_price_tab_hidden_without_keys(monkeypatch, tmp_path):
     F.annual(at, 2025)
     assert not at.exception, at.exception
     t = " ".join(m.value for m in at.markdown)
-    assert "개인 PC에서 실행할 때만" in t
+    assert "공개 웹사이트에 직접 표시할 수 없어" in t
+    assert 'href="https://finance.yahoo.com/quote/MU"' in t and "Yahoo Finance에서 주가 보기" in t
     assert not any(r.key == "px_span" for r in at.radio)
     assert not any("twelvedata" in u or "apis.data.go.kr" in u for u, _ in F.CALLS)
 
@@ -258,6 +261,7 @@ def test_app_pick_quarters(tmp_path, monkeypatch):
 
     def text():
         assert not at.exception, at.exception
+        assert not any(m.value.strip().strip("`") == "None" for m in at.markdown)  # 화면에 'None'이 찍히면 안 됨
         return " ".join(m.value for m in at.markdown)
 
     # 한 분기: 기본은 두 회사 모두 있는 가장 최근 분기 (CJ·마이크론 공통 2025 3Q)
