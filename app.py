@@ -18,7 +18,10 @@ import streamlit as st
 
 import dart
 import fx
+import prices
+import quarter
 import sec
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="피어스코프 | 경쟁사 재무 비교", layout="wide")
 
@@ -123,7 +126,32 @@ def load_us_list(ua: str) -> list[dict]:
 
 @st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
 def load_us(ua: str, comp: dict, year: int) -> dict:
-    return sec.analyze_company(ua, comp, year)
+    facts = sec.fetch_facts(ua, comp["cik"])
+    res = sec.analyze_company(ua, comp, year, facts_json=facts)
+    try:
+        res["quarters"] = quarter.us_quarters(facts)
+    except dart.DartError:
+        res["quarters"] = None
+    return res
+
+
+KR_QCACHE = os.path.join(os.path.dirname(KR_CACHE), "kr_quarterly.json.gz")
+
+
+@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
+def load_kr_quarters_live(key: str, corp: dict, latest: str):
+    try:
+        return quarter.kr_quarters(key, corp, latest)
+    except dart.DartError:
+        return None
+
+
+@st.cache_data(ttl=60 * 60 * 3, show_spinner=False)
+def load_prices(market: str, code: str, start: str, end: str, kr_key: str, us_key: str):
+    s, e = date.fromisoformat(start), date.fromisoformat(end)
+    if market == "KR":
+        return prices.kr_prices(kr_key, code, s, e)
+    return prices.us_prices(us_key, code, s, e)
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
@@ -221,6 +249,13 @@ else:
     except Exception as ex:  # 그 밖의 오류 (인증키가 보이지 않게 가림)
         kr_msg = f"DART 회사 목록을 처리하지 못했습니다. {dart.scrub(ex)}"
 
+KRQ = None
+if KR is not None and os.path.exists(KR_QCACHE):
+    try:
+        KRQ = load_kr_cache(KR_QCACHE, os.path.getmtime(KR_QCACHE))
+    except Exception:
+        KRQ = None
+
 LABEL = {f"{c['name']} ({c['stock']})": c for c in CORPS}
 UA = secret("SEC_USER_AGENT")
 US_LABEL, us_msg = {}, ""
@@ -253,7 +288,8 @@ with st.form("pick"):
                            else "연결: 종속회사 포함 / 개별: 해당 법인 단독"))
     go_btn = c3.form_submit_button("조회", type="primary", width="stretch")
     if KR is not None:
-        st.caption(f"국내 데이터: {KR['collected_at'][:10]} 수집, {KR['base_year']}년 사업보고서까지 반영")
+        qtxt = f", 분기는 {quarter.parse(KRQ['latest'])[0]}년 {quarter.parse(KRQ['latest'])[1]}분기까지" if KRQ else ""
+        st.caption(f"국내 데이터: {KR['collected_at'][:10]} 수집, {KR['base_year']}년 사업보고서까지 반영{qtxt}")
     for msg in (kr_msg, us_msg):
         if msg:
             st.caption(msg)
@@ -276,9 +312,14 @@ if go_btn:
                 entry = KR["companies"].get(comp["code"])
                 if entry is None:
                     raise dart.DartError("CACHE", "수집 데이터에 없는 회사입니다. 수집기를 다시 실행하면 추가됩니다.")
-                cos.append(dart.company_from_cache(entry, comp, int(year), int(KR["base_year"])))
+                c_ = dart.company_from_cache(entry, comp, int(year), int(KR["base_year"]))
+                qe = (KRQ or {}).get("companies", {}).get(comp["code"])
+                c_["quarters"] = qe if qe and qe.get("status") == "ok" else None
+                cos.append(c_)
             elif mk == "KR":
-                cos.append(load_company(KEY, comp, int(year), "CFS" if basis == "연결 우선" else "OFS"))
+                c_ = dict(load_company(KEY, comp, int(year), "CFS" if basis == "연결 우선" else "OFS"))
+                c_["quarters"] = load_kr_quarters_live(KEY, comp, quarter.latest_quarter())
+                cos.append(c_)
             else:
                 cos.append(load_us(UA, comp, int(year)))
         except dart.DartError as ex:
@@ -332,7 +373,7 @@ AMT_KEYS = ("rev", "op", "net", "assets", "liab", "equity")
 
 
 def cur(c, part, k, y=None):
-    return c["years"][y or year][part][k]
+    return c["years"][y or year][part].get(k)
 
 
 def basis_of(c) -> str:
@@ -374,9 +415,9 @@ def factor(c, y, k):
             fx_used[(src, TARGET)] = (r, d)
             return r
         pe = c["period_end"].get(y)
-        ends = sorted(c["period_end"].values())
         if not pe:
             return None
+        ends = all_ends(c)
         start = (date.fromisoformat(ends[0]) - timedelta(days=370)).isoformat()
         ser = fx_series(src, TARGET, start, ends[-1])
         r = fx.period_average(ser, pe) if k in sec.FLOW else fx.on_date(ser, pe)
@@ -386,6 +427,53 @@ def factor(c, y, k):
     except Exception:
         fx_fail.add(f"{src}→{TARGET}")
         return None
+
+
+def q_end(c, lb):
+    q = c.get("quarters") or {}
+    return (q.get("period_end") or {}).get(lb) or (quarter.kr_quarter_end(lb) if c["market"] == "KR" else None)
+
+
+def all_ends(c) -> list[str]:
+    ends = list(c["period_end"].values())
+    q = c.get("quarters") or {}
+    ends += [e_ for e_ in (q_end(c, lb) for lb in q.get("q", {})) if e_]
+    return sorted(ends)
+
+
+def qfactor(c, lb, k):
+    src = c["currency"]
+    if src == TARGET:
+        return 1.0
+    if rate_mode == "현재 환율":
+        return factor(c, year, k)
+    pe = q_end(c, lb)
+    if not pe:
+        return None
+    try:
+        ends = all_ends(c)
+        start = (date.fromisoformat(ends[0]) - timedelta(days=370)).isoformat()
+        ser = fx_series(src, TARGET, start, ends[-1])
+        r = fx.period_average(ser, pe, days=91) if k in sec.FLOW else fx.on_date(ser, pe)
+        if r is not None:
+            fx_used[(src, TARGET)] = None
+        return r
+    except Exception:
+        fx_fail.add(f"{src}→{TARGET}")
+        return None
+
+
+def qconv(c, lb, k):
+    v = ((c.get("quarters") or {}).get("q", {}).get(lb) or {}).get(k)
+    if v is None:
+        return None
+    f = qfactor(c, lb, k)
+    return None if f is None else v * f
+
+
+def qname(lb: str) -> str:
+    y, q = quarter.parse(lb)
+    return f"{y} {q}Q"
 
 
 def conv(c, k, y=None):
@@ -429,6 +517,13 @@ def excel_bytes() -> bytes:
         table.to_excel(w, sheet_name="비교표", index=False)
         trend.to_excel(w, sheet_name="5개년 추이", index=False)
         raw.to_excel(w, sheet_name="원본 데이터(보고 통화)", index=False)
+        qrows = [{"회사": c["name"], "분기": lb, **{f"{dart.METRIC_LABEL[k]}({UNIT})": (None if qconv(c, lb, k) is None
+                                                                                   else qconv(c, lb, k) / DIV)
+                                                 for k in quarter.FLOW},
+                  "계산값(4분기)": "예" if lb in c["quarters"]["derived"] else ""}
+                 for c in cos if c.get("quarters") for lb in sorted(c["quarters"]["q"])]
+        if qrows:
+            pd.DataFrame(qrows).to_excel(w, sheet_name="분기 실적", index=False)
     return buf.getvalue()
 
 
@@ -481,7 +576,8 @@ show(panel("주요 지표", kpi, note + (f"<br>{e(fxn)}" if fxn else "")))
 
 # ───────────── 탭 ─────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["지표 순위", "상세 비교표", "5개년 추이", "ROE 분해", "원본 데이터"])
+(tab1, tab2, tab3, tab_q, tab_pos, tab4, tab_px, tab5) = st.tabs(
+    ["지표 순위", "상세 비교표", "5개년 추이", "분기 실적", "포지셔닝·구조", "ROE 분해", "주가", "원본 데이터"])
 
 with tab1:
     def cell(x):
@@ -580,6 +676,274 @@ with tab4:
         show(f'<div class="scroll"><table class="grid"><thead><tr>{th("회사", left=True)}{th("ROE")}{th("순이익률")}'
              f'{th("총자산회전율")}{th("재무레버리지")}</tr></thead><tbody>{tr}</tbody></table></div>')
 
+# ───────────── 분기 실적 ─────────────
+
+with tab_q:
+    qcos = [c for c in cos if c.get("quarters")]
+    if not qcos:
+        show('<div class="info">분기 데이터가 있는 회사가 없습니다.<br>국내 기업은 수집기를 다시 실행해 분기 데이터(kr_quarterly.json.gz)를 올리면 표시됩니다.</div>')
+    else:
+        missing_q = [c["name"] for c in cos if not c.get("quarters")]
+        # 최근 분기 표
+        rows_q = []
+        for c in qcos:
+            qd = c["quarters"]
+            lb = qd["latest"]
+            now_m, prev_m = quarter.margin(qd, lb), quarter.margin(qd, quarter.shift(lb, -4))
+            dm = None if now_m is None or prev_m is None else now_m - prev_m
+            rows_q.append(
+                f'<tr>{co_cell(c)}<td>{qname(lb)}{" *" if lb in qd["derived"] else ""}</td>'
+                f'<td>{n_amt(qconv(c, lb, "rev"))}</td><td>{delta(quarter.yoy(qd, lb, "rev"), "%")}</td>'
+                f'<td>{n_amt(qconv(c, lb, "op"))}</td><td>{n_pct(now_m)}</td><td>{delta(dm, "%p")}</td>'
+                f'<td>{n_amt(qconv(c, lb, "net"))}</td></tr>')
+        show(panel("최근 분기 실적", '<table class="grid"><thead><tr>' + th("회사", left=True) + th("분기") + th("매출액", UNIT)
+                   + th("전년 동기비") + th("영업이익", UNIT) + th("영업이익률") + th("전년 동기비") + th("순이익", UNIT)
+                   + "</tr></thead><tbody>" + "".join(rows_q) + "</tbody></table>",
+                   "전년 동기비는 1년 전 같은 분기와 비교한 값입니다. * 표시는 연간 실적에서 3분기 누적을 빼서 계산한 4분기입니다."))
+        # TTM 표
+        rows_t = []
+        for c in qcos:
+            qd = c["quarters"]
+            t = quarter.ttm(qd)
+            if not t:
+                rows_t.append(f'<tr>{co_cell(c)}<td class="l flat" colspan="8">최근 4개 분기가 모두 있지 않아 계산할 수 없습니다.</td></tr>')
+                continue
+            four = quarter.last_n(qd["latest"], 4)
+            tconv = {}
+            for k_ in quarter.FLOW:
+                vs = [qconv(c, lb, k_) for lb in four]
+                tconv[k_] = None if any(v is None for v in vs) or k_ not in t["amount"] else sum(vs)
+            r = t["ratio"]
+            rows_t.append(
+                f'<tr>{co_cell(c)}<td>{qname(four[0])}~{qname(four[-1])}</td>'
+                f'<td>{n_amt(tconv["rev"])}</td><td>{delta(r["growth"], "%")}</td><td>{n_amt(tconv["op"])}</td>'
+                f'<td>{n_pct(r["op_margin"])}</td><td>{n_pct(r["net_margin"])}</td><td>{n_pct(r["roe"])}</td>'
+                f'<td>{n_pct(r["debt"])}</td></tr>')
+        show(panel("최근 4개 분기 합계 (TTM)", '<table class="grid"><thead><tr>' + th("회사", left=True) + th("기간")
+                   + th("매출액", UNIT) + th("직전 4개 분기 대비") + th("영업이익", UNIT) + th("영업이익률") + th("순이익률")
+                   + th("ROE") + th("부채비율") + "</tr></thead><tbody>" + "".join(rows_t) + "</tbody></table>",
+                   "아직 연간 보고서가 나오지 않은 최근 1년 실적을 비교할 때 씁니다. ROE·부채비율은 최근 분기말 자본·부채 기준입니다."))
+        # 분기 차트
+        qopts = {"매출액": ("amt", "rev"), "영업이익": ("amt", "op"), "순이익": ("amt", "net"),
+                 "영업이익률": ("margin", "op"), "순이익률": ("margin", "net"), "매출 전년 동기비": ("yoy", "rev")}
+        qpick = st.radio("분기 지표", list(qopts), horizontal=True, label_visibility="collapsed", key="qpick")
+        kind, k_ = qopts[qpick]
+        labels = sorted({lb for c in qcos for lb in c["quarters"]["q"]})[-8:]
+
+        def qval(c, lb):
+            qd = c["quarters"]
+            if kind == "amt":
+                v = qconv(c, lb, k_)
+                return None if v is None else v / DIV
+            if kind == "margin":
+                return quarter.margin(qd, lb, k_)
+            return quarter.yoy(qd, lb, k_)
+
+        with st.container(border=True):
+            unit_txt = UNIT if kind == "amt" else "%"
+            show(f'<div class="ptitle" style="padding:2px 0 0">분기별 {e(qpick)} <span style="font-weight:400;color:{SUB};font-size:12px">'
+                 f'({e(unit_txt)})</span></div>')
+            fig = go.Figure()
+            xs = [qname(lb) for lb in labels]
+            for c in qcos:
+                ys = [qval(c, lb) for lb in labels]
+                hov = ("%{y:,.0f} " + UNIT if kind == "amt" else "%{y:.1%}") + "<extra>" + c["name"] + "</extra>"
+                if kind == "amt":
+                    fig.add_trace(go.Bar(x=xs, y=ys, name=c["name"], marker=dict(color=COLOR[c["name"]], cornerradius=2),
+                                         hovertemplate=hov))
+                else:
+                    fig.add_trace(go.Scatter(x=xs, y=ys, name=c["name"], mode="lines+markers", connectgaps=False,
+                                             line=dict(width=2, color=COLOR[c["name"]]),
+                                             marker=dict(size=7, color=COLOR[c["name"]]), hovertemplate=hov))
+            fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08, hovermode="x unified")
+            st.plotly_chart(style_fig(fig, ",.0f" if kind == "amt" else ".0%"), width="stretch",
+                            config={"displayModeBar": False})
+            tr = "".join(f"<tr>{co_cell(c)}" + "".join(
+                f"<td>{('–' if qval(c, lb) is None else (f'{qval(c, lb):,.0f}' if kind == 'amt' else n_pct(qval(c, lb))))}</td>"
+                for lb in labels) + "</tr>" for c in qcos)
+            show(f'<div class="scroll"><table class="grid"><thead><tr>{th("회사", left=True)}'
+                 + "".join(th(qname(lb)) for lb in labels) + f"</tr></thead><tbody>{tr}</tbody></table></div>")
+        notes_q = ["국내 기업은 분기·반기 보고서의 3개월 실적, 미국 기업은 10-Q 보고서 수치입니다.",
+                   "미국 기업의 회계 분기는 기간 한가운데 날짜가 속한 달력 분기로 맞췄습니다 (예: 8~10월 분기 → 3분기)."]
+        der = sorted({qname(d) for c in qcos for d in c["quarters"]["derived"]})
+        if der:
+            notes_q.append("4분기(" + ", ".join(der) + ")는 연간 실적에서 3분기 누적을 빼서 계산했습니다.")
+        if missing_q:
+            notes_q.append("분기 데이터 없음: " + ", ".join(missing_q))
+        st.caption(" ".join(notes_q))
+
+# ───────────── 포지셔닝·구조 ─────────────
+
+with tab_pos:
+    def median(vals):
+        v = sorted(x for x in vals if x is not None)
+        if not v:
+            return None
+        m = len(v) // 2
+        return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
+
+    def pos_map(title, xk, yk, xlabel, ylabel, desc):
+        pts = [(c, cur(c, "ratio", xk), cur(c, "ratio", yk)) for c in cos]
+        pts = [p for p in pts if p[1] is not None and p[2] is not None]
+        with st.container(border=True):
+            show(f'<div class="ptitle" style="padding:2px 0 0">{e(title)}</div>'
+                 f'<div style="font-size:13px;color:{SUB};margin:4px 0 6px">{e(desc)}</div>')
+            if len(pts) < 2:
+                st.caption("두 회사 이상 값이 있어야 비교할 수 있습니다.")
+                return
+            revs = [conv(c, "rev") or 0 for c, _, _ in pts]
+            mx = max(revs) or 1
+            fig = go.Figure()
+            for (c, x, y), rv in zip(pts, revs):
+                fig.add_trace(go.Scatter(
+                    x=[x], y=[y], mode="markers+text", name=c["name"], cliponaxis=False,
+                    text=[c["name"] if len(c["name"]) <= 14 else c["name"][:13] + "…"], textposition="top center",
+                    textfont=dict(color=INK, size=12),
+                    marker=dict(size=14 + 36 * (rv / mx) ** 0.5, color=COLOR[c["name"]], opacity=0.85,
+                                line=dict(color="white", width=2)),
+                    hovertemplate=f"{c['name']}<br>{xlabel}: %{{x:.1%}}<br>{ylabel}: %{{y:.1%}}<extra></extra>"))
+            mxv, myv = median([p[1] for p in pts]), median([p[2] for p in pts])
+            fig.add_vline(x=mxv, line=dict(color="#b8c1cc", dash="dot", width=1))
+            fig.add_hline(y=myv, line=dict(color="#b8c1cc", dash="dot", width=1))
+            fig.update_layout(showlegend=False)
+            style_fig(fig, ".0%", height=380)
+            fig.update_layout(margin=dict(l=8, r=40, t=30, b=8))
+            xs_, ys_ = [p[1] for p in pts], [p[2] for p in pts]
+            padx = (max(xs_) - min(xs_)) * 0.22 or 0.05
+            pady = (max(ys_) - min(ys_)) * 0.22 or 0.05
+            fig.update_xaxes(type="linear", tickformat=".0%", title=dict(text=xlabel, font=dict(size=12)),
+                             showgrid=True, gridcolor="#edf0f4", range=[min(xs_) - padx, max(xs_) + padx])
+            fig.update_yaxes(range=[min(ys_) - pady, max(ys_) + pady * 1.4])
+            fig.update_yaxes(title=dict(text=ylabel, font=dict(size=12)))
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+            st.caption("점선은 비교 회사들의 중앙값, 원 크기는 매출액입니다.")
+
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        pos_map("성장성 × 수익성", "growth", "op_margin", "매출 성장률", "영업이익률",
+                "오른쪽 위일수록 빠르게 크면서 많이 남기는 회사입니다.")
+    with pc2:
+        pos_map("재무 레버리지 × ROE", "debt", "roe", "부채비율", "ROE",
+                "같은 ROE라도 오른쪽(부채비율 높음)이면 빚을 활용해 만든 수익일 가능성이 큽니다.")
+
+    with st.container(border=True):
+        show('<div class="ptitle" style="padding:2px 0 0">재무 구조</div>'
+             f'<div style="font-size:13px;color:{SUB};margin:4px 0 6px">자산총계를 100으로 놓고 무엇으로 조달했고(부채·자본) 어떤 자산을 가졌는지(유동·비유동) 비교합니다.</div>')
+        sc1, sc2 = st.columns(2)
+
+        def stack(col, title, parts):
+            rows_ = []
+            for c in cos:
+                a = cur(c, "amount", "assets")
+                vals = [cur(c, "amount", k1) if k1 != "nca" else (None if a is None or cur(c, "amount", "ca") is None
+                                                                  else a - cur(c, "amount", "ca")) for k1, _, _ in parts]
+                if a and all(v is not None for v in vals):
+                    rows_.append((c["name"], [v / a for v in vals]))
+            with col:
+                if not rows_:
+                    st.caption(f"{title}: 계산할 수 있는 회사가 없습니다.")
+                    return
+                f = go.Figure()
+                for i, (_, lab, colr) in enumerate(parts):
+                    f.add_trace(go.Bar(
+                        y=[r[0] for r in rows_], x=[r[1][i] for r in rows_], name=lab, orientation="h",
+                        marker=dict(color=colr, line=dict(color="white", width=2)),
+                        text=[f"{r[1][i] * 100:.0f}%" for r in rows_], textposition="inside", insidetextanchor="middle",
+                        textfont=dict(color="white" if i == 0 else INK, size=12),
+                        hovertemplate="%{y} " + lab + ": %{x:.1%}<extra></extra>"))
+                f.update_layout(barmode="stack", bargap=0.35, title=dict(text=title, font=dict(size=13, color=INK), x=0))
+                f.update_layout(legend=dict(traceorder="normal"))
+                style_fig(f, ".0%", height=110 + 46 * len(rows_))
+                f.update_xaxes(type="linear", range=[0, 1], showgrid=False, showticklabels=False)
+                f.update_yaxes(type="category", autorange="reversed", showgrid=False)
+                st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+
+        stack(sc1, "자금 조달: 부채 vs 자본", [("liab", "부채", "#0b3b75"), ("equity", "자본", "#c7d3e3")])
+        stack(sc2, "자산 구성: 유동 vs 비유동", [("ca", "유동자산", "#0b3b75"), ("nca", "비유동자산", "#c7d3e3")])
+
+# ───────────── 주가 ─────────────
+
+with tab_px:
+    KR_PX_KEY, US_PX_KEY = secret("DATA_GO_KR_KEY"), secret("TWELVE_DATA_KEY")
+    span = st.radio("기간", ["3개월", "6개월", "1년", "3년"], index=2, horizontal=True, key="px_span",
+                    label_visibility="collapsed")
+    days = {"3개월": 92, "6개월": 183, "1년": 366, "3년": 1096}[span]
+    end_d = date.today()
+    start_d = end_d - timedelta(days=days)
+    series, px_err = {}, []
+    for c in cos:
+        mkey = KR_PX_KEY if c["market"] == "KR" else US_PX_KEY
+        if not mkey:
+            px_err.append(f"<b>{e(c['name'])}</b> " + ("Secrets에 DATA_GO_KR_KEY(공공데이터포털 인증키)를 추가하면 표시됩니다."
+                                                   if c["market"] == "KR" else
+                                                   "Secrets에 TWELVE_DATA_KEY(Twelve Data API 키)를 추가하면 표시됩니다."))
+            continue
+        try:
+            series[c["name"]] = load_prices(c["market"], c["stock"], start_d.isoformat(), end_d.isoformat(),
+                                            KR_PX_KEY, US_PX_KEY)
+        except prices.PriceError as ex:
+            px_err.append(f"<b>{e(c['name'])}</b> {e(str(ex))}")
+        except Exception as ex:
+            px_err.append(f"<b>{e(c['name'])}</b> 시세를 불러오지 못했습니다. {e(dart.scrub(ex))}")
+    if px_err:
+        show('<div class="notice">' + "".join(f"<div>{m}</div>" for m in px_err) + "</div>")
+    if series:
+        with st.container(border=True):
+            show('<div class="ptitle" style="padding:2px 0 0">주가 수익률 비교 <span style="font-weight:400;color:'
+                 f'{SUB};font-size:12px">(기간 첫날 = 0%)</span></div>')
+            fig = go.Figure()
+            for c in cos:
+                rows_ = series.get(c["name"])
+                if not rows_:
+                    continue
+                base = next((r["close"] for r in rows_ if r["close"]), None)
+                fig.add_trace(go.Scatter(
+                    x=[r["date"] for r in rows_], y=[(r["close"] / base - 1) if base and r["close"] else None for r in rows_],
+                    name=c["name"], mode="lines", line=dict(width=2, color=COLOR[c["name"]]),
+                    hovertemplate="%{y:+.1%}<extra>" + c["name"] + "</extra>"))
+            fig.update_layout(hovermode="x unified")
+            style_fig(fig, "+.0%")
+            fig.update_xaxes(type="date")
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+            tr = []
+            for c in cos:
+                rows_ = series.get(c["name"])
+                if not rows_:
+                    continue
+                last = rows_[-1]
+                ccy = "원" if c["market"] == "KR" else "달러"
+                fmt_p = (lambda v: f"{v:,.0f}") if c["market"] == "KR" else (lambda v: f"{v:,.2f}")
+                hi = max(r["high"] or r["close"] for r in rows_)
+                lo = min(r["low"] or r["close"] for r in rows_)
+                tr.append(f'<tr>{co_cell(c)}<td>{last["date"]}</td><td>{fmt_p(last["close"])} {ccy}</td>'
+                          f'<td>{delta(prices.period_return(rows_), "%")}</td><td>{fmt_p(hi)}</td><td>{fmt_p(lo)}</td></tr>')
+            show('<div class="scroll"><table class="grid"><thead><tr>' + th("회사", left=True) + th("기준일") + th("종가")
+                 + th(f"{span} 수익률") + th("기간 최고") + th("기간 최저") + "</tr></thead><tbody>" + "".join(tr)
+                 + "</tbody></table></div>")
+        with st.container(border=True):
+            names_px = [c["name"] for c in cos if c["name"] in series]
+            who = st.selectbox("회사 선택", names_px, key="px_who")
+            rows_ = series[who]
+            cc = next(c for c in cos if c["name"] == who)
+            f = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.04)
+            f.add_trace(go.Candlestick(
+                x=[r["date"] for r in rows_], open=[r["open"] for r in rows_], high=[r["high"] for r in rows_],
+                low=[r["low"] for r in rows_], close=[r["close"] for r in rows_], name=who,
+                increasing=dict(line=dict(color="#d1263b", width=1), fillcolor="#d1263b"),
+                decreasing=dict(line=dict(color="#1d5fd1", width=1), fillcolor="#1d5fd1")), row=1, col=1)
+            up = [(r["close"] or 0) >= (r["open"] or 0) for r in rows_]
+            f.add_trace(go.Bar(x=[r["date"] for r in rows_], y=[r["volume"] for r in rows_], name="거래량",
+                               marker=dict(color=["#e9a3ac" if u else "#a3bde9" for u in up]),
+                               hovertemplate="거래량 %{y:,.0f}<extra></extra>"), row=2, col=1)
+            f.update_layout(showlegend=False, xaxis_rangeslider_visible=False, hovermode="x unified")
+            style_fig(f, ",.0f" if cc["market"] == "KR" else ",.2f", height=460)
+            f.update_xaxes(type="date")
+            f.update_yaxes(tickformat=",.0f", row=2, col=1)
+            st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+            st.caption("빨강은 상승(종가 ≥ 시가), 파랑은 하락입니다. 가격은 각 시장 통화(원·달러) 그대로입니다.")
+    st.caption("국내 시세: 금융위원회 주식시세정보(공공데이터포털, 영업일 하루 뒤 공개). 미국 시세: Twelve Data 일봉. "
+               "수익률 비교는 통화와 관계없이 각 주가의 등락률입니다.")
+
 with tab5:
     head = (th("회사", left=True) + th("통화") + th("항목", left=True) + th("계정 ID", left=True) + th("계정명", left=True)
             + "".join(th(str(y)) for y in reversed(YRS)) + th("공시 원문"))
@@ -598,5 +962,5 @@ with tab5:
                "공시 수치를 환율 변환 없이 각 회사의 보고 통화 그대로 표시합니다. 공시 원문 링크는 기준연도 보고서입니다."))
 
 show('<div class="foot">데이터 출처: 금융감독원 전자공시시스템(DART) 오픈API, 미국 증권거래위원회(SEC) EDGAR, '
-     '환율은 유럽중앙은행 기준환율(Frankfurter API).<br>'
+     '환율은 유럽중앙은행 기준환율(Frankfurter API), 주가는 금융위원회 주식시세정보·Twelve Data.<br>'
      '업종과 회계 기준이 달라 수치만으로 기업의 우열을 단정할 수 없습니다. ROE와 ROA는 기말 잔액으로 단순 계산했습니다.</div>')

@@ -61,6 +61,7 @@ FIN = {
 class Resp:
     def __init__(self, content=b"", js=None, code=200):
         self.content, self._js, self.status_code = content, js, code
+        self.text = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content)
 
     def json(self):
         if self._js is None:
@@ -212,3 +213,135 @@ def fake_get(url, params=None, timeout=None, headers=None):  # noqa: F811
 
 class FakeHttp:  # noqa: F811
     get = staticmethod(fake_get)
+
+
+# ───────────── 가짜 국내 분기 보고서 (씨제이이엔엠) ─────────────
+T = 1_000_000_000_000
+
+
+def qrow(sj, i, nm, **amts):
+    r = {"rcept_no": amts.pop("rc", "20261114000333"), "sj_div": sj, "account_id": i, "account_nm": nm}
+    for k, v in amts.items():
+        r[k] = "" if v is None else f"{int(round(v * T)):,}"
+    return r
+
+
+# 2025: 1Q 1.1 / 2Q 1.2 / 3Q 1.3 (9개월 3.6, 연간 5.0 → 4Q 1.4)
+# 2026: 1Q 1.25 / 2Q 1.35 / 3Q 1.5
+CJ_Q = {"rev": ((1.1, 1.2, 1.3), (1.25, 1.35, 1.5)), "op": ((0.03, 0.04, 0.05), (0.06, 0.07, 0.09)),
+        "net": ((0.02, 0.02, 0.03), (0.04, 0.04, 0.05))}
+CJ_BS = {"assets": (10.2, 10.4, 10.6), "liab": (6.1, 6.2, 6.3), "equity": (4.1, 4.2, 4.3), "ca": (3.0, 3.1, 3.2),
+         "cl": (2.5, 2.5, 2.6)}
+CJ_BS_YE25 = {"assets": 10, "liab": 6, "equity": 4, "ca": 3, "cl": 2.5}
+IDS = {"rev": ("CIS", "ifrs-full_Revenue", "매출액"), "op": ("CIS", "dart_OperatingIncomeLoss", "영업이익(손실)"),
+       "net": ("CIS", "ifrs-full_ProfitLoss", "당기순이익(손실)"), "assets": ("BS", "ifrs-full_Assets", "자산총계"),
+       "liab": ("BS", "ifrs-full_Liabilities", "부채총계"), "equity": ("BS", "ifrs-full_Equity", "자본총계"),
+       "ca": ("BS", "ifrs-full_CurrentAssets", "유동자산"), "cl": ("BS", "ifrs-full_CurrentLiabilities", "유동부채")}
+
+
+def cj_qreport(k):
+    rows = []
+    for key, (p, c) in CJ_Q.items():
+        sj, i, nm = IDS[key]
+        if k == 1:  # 1분기 보고서: 누적 칸이 비어 있는 경우도 처리해야 함
+            rows.append(qrow(sj, i, nm, thstrm_amount=c[0], thstrm_add_amount=None, frmtrm_q_amount=None,
+                             frmtrm_add_amount=p[0]))
+        else:
+            rows.append(qrow(sj, i, nm, thstrm_amount=c[k - 1], thstrm_add_amount=sum(c[:k]),
+                             frmtrm_q_amount=p[k - 1], frmtrm_add_amount=sum(p[:k])))
+    for key, vals in CJ_BS.items():
+        sj, i, nm = IDS[key]
+        rows.append(qrow(sj, i, nm, thstrm_amount=vals[k - 1], frmtrm_amount=CJ_BS_YE25[key]))
+    return rows
+
+
+QFIN = {("00265324", "2026", "11013", "CFS"): {"status": "000", "list": cj_qreport(1)},
+        ("00265324", "2026", "11012", "CFS"): {"status": "000", "list": cj_qreport(2)},
+        ("00265324", "2026", "11014", "CFS"): {"status": "000", "list": cj_qreport(3)}}
+
+# ───────────── 가짜 미국 분기 (마이크론) ─────────────
+# FY2024: 2023-09-01~2024-08-29, 분기 4.7/5.8/6.8 (9개월 17.3) → 4분기 7.8
+# FY2025: 2024-08-30~2025-08-28, 분기 8.7/8.1/9.3 (9개월 26.1), 10-K에 4분기 3개월 11.3도 있음
+_P24 = [("2023-09-01", "2023-11-30"), ("2023-12-01", "2024-02-29"), ("2024-03-01", "2024-05-30")]
+_P25 = [("2024-08-30", "2024-11-28"), ("2024-11-29", "2025-02-27"), ("2025-02-28", "2025-05-29")]
+
+
+def _q(s, e, v, filed, form="10-Q"):
+    return {"start": s, "end": e, "val": v, "fy": int(e[:4]), "fp": "Q", "form": form, "filed": filed,
+            "accn": "0000723125-" + filed.replace("-", "")[2:8] + "-1"}
+
+
+MU_FACTS["facts"]["us-gaap"]["Revenues"]["units"]["USD"] += (
+    [_q(s, e, v * B, f"{e[:7]}-25") for (s, e), v in zip(_P24, (4.7, 5.8, 6.8))]
+    + [_q("2023-09-01", "2024-05-30", 17.3 * B, "2024-06-26")]
+    + [_q(s, e, v * B, f"{e[:7]}-25") for (s, e), v in zip(_P25[:2], (8.7, 8.1))]
+    + [_q("2025-02-28", "2025-05-29", 9.3 * B, "2025-06-26")])
+for f in MU_FACTS["facts"]["us-gaap"]["Revenues"]["units"]["USD"]:
+    if f.get("form") == "10-Q" and f["start"] == "2024-08-30" and f["end"] == "2025-05-29":
+        f["val"] = 26.1 * B  # 9개월 누적
+MU_FACTS["facts"]["us-gaap"]["OperatingIncomeLoss"]["units"]["USD"] += (
+    [_q(s, e, v * B, f"{e[:7]}-25") for (s, e), v in zip(_P24, (-1.3, 0.2, 0.9))]
+    + [_q("2023-09-01", "2024-05-30", -0.2 * B, "2024-06-26")]
+    + [_q(s, e, v * B, f"{e[:7]}-25") for (s, e), v in zip(_P25, (1.7, 1.8, 2.5))]
+    + [_q("2024-08-30", "2025-05-29", 6.0 * B, "2025-06-26")])
+MU_FACTS["facts"]["us-gaap"]["Assets"]["units"]["USD"].append(
+    {"end": "2025-05-29", "val": 78.0 * B, "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-06-26",
+     "accn": "0000723125-25-000050"})
+MU_FACTS["facts"]["us-gaap"]["StockholdersEquity"]["units"]["USD"].append(
+    {"end": "2025-05-29", "val": 50.0 * B, "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-06-26",
+     "accn": "0000723125-25-000050"})
+
+# ───────────── 가짜 주가 ─────────────
+
+
+def kr_price_items(code, start, end):
+    out = []
+    for i, d in enumerate(fx_series_dates(start, end)):
+        c = 100000 + i * 100
+        out.append({"basDt": d.replace("-", ""), "srtnCd": code, "itmsNm": "x", "clpr": str(c), "mkp": str(c - 50),
+                    "hipr": str(c + 200), "lopr": str(c - 300), "trqu": str(1000 + i)})
+    out.append({"basDt": "20260102", "srtnCd": code + "0", "clpr": "1"})  # 다른 종목 (걸러져야 함)
+    return out
+
+
+def price_response(url, params):
+    if "apis.data.go.kr" in url:
+        if params.get("serviceKey") == "BADKR":
+            return Resp(b"<OpenAPI_ServiceResponse>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</OpenAPI_ServiceResponse>")
+        s, e = params["beginBasDt"], params["endBasDt"]
+        items = kr_price_items(params["likeSrtnCd"], f"{s[:4]}-{s[4:6]}-{s[6:]}", f"{e[:4]}-{e[4:6]}-{e[6:]}")
+        page, n = int(params["pageNo"]), int(params["numOfRows"])
+        chunk = items[(page - 1) * n: page * n]
+        return Resp(js={"response": {"header": {"resultCode": "00", "resultMsg": "NORMAL SERVICE."},
+                                     "body": {"numOfRows": n, "pageNo": page, "totalCount": len(items),
+                                              "items": {"item": chunk}}}})
+    if "twelvedata" in url:
+        if params.get("apikey") == "LIMIT":
+            return Resp(js={"code": 429, "message": "limit", "status": "error"})
+        vals = [{"datetime": d, "open": "100", "high": "110", "low": "95", "close": str(100 + i), "volume": "5000"}
+                for i, d in enumerate(fx_series_dates(params["start_date"], params["end_date"]))]
+        return Resp(js={"meta": {"symbol": params["symbol"]}, "values": list(reversed(vals)), "status": "ok"})
+    return None
+
+
+_prev_fake_get = fake_get
+
+
+def fake_get(url, params=None, timeout=None, headers=None):  # noqa: F811
+    params = params or {}
+    if "fnlttSinglAcntAll" in url and params.get("reprt_code", "11011") != "11011":
+        CALLS.append((url, dict(params)))
+        k = (params["corp_code"], params["bsns_year"], params["reprt_code"], params["fs_div"])
+        return Resp(js=QFIN.get(k, {"status": "013", "message": "조회된 데이타가 없습니다."}))
+    pr = price_response(url, params)
+    if pr is not None:
+        CALLS.append((url, dict(params)))
+        return pr
+    return _prev_fake_get(url, params=params, timeout=timeout, headers=headers)
+
+
+class FakeHttp:  # noqa: F811
+    get = staticmethod(fake_get)
+MU_FACTS["facts"]["us-gaap"]["LiabilitiesAndStockholdersEquity"]["units"]["USD"].append(
+    {"end": "2025-05-29", "val": 78.0 * B, "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-06-26",
+     "accn": "0000723125-25-000050"})

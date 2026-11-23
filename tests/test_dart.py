@@ -138,3 +138,8 @@ def test_network_error_hides_key():
     assert e.value.status == "NET" and "SECRETKEY1234" not in str(e.value)
     assert "SECRET" not in dart.scrub("url?crtfc_key=SECRETKEY1234&corp_code=1")
     assert dart.scrub("url?crtfc_key=SECRETKEY1234&corp_code=1") == "url?crtfc_key=***&corp_code=1"
+
+
+def test_no_margin_for_nonpositive_revenue():
+    r = dart.ratios({"rev": -5, "op": 3, "net": 2})
+    assert r["op_margin"] is None and r["net_margin"] is None

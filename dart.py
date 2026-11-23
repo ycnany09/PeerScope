@@ -119,14 +119,17 @@ def listed(corps: list[dict]) -> list[dict]:
 
 # ───────────── 재무제표 ─────────────
 
-def fetch_statements(key: str, corp_code: str, year: int, order: tuple[str, ...], http=requests):
-    """사업보고서 전체 재무제표. order 순서대로(연결 CFS → 개별 OFS) 시도한다.
+REPRT = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}  # 1분기, 반기, 3분기, 사업보고서
+
+
+def fetch_statements(key: str, corp_code: str, year: int, order: tuple[str, ...], http=requests, reprt: str = "11011"):
+    """정기보고서 전체 재무제표(기본: 사업보고서). order 순서대로(연결 CFS → 개별 OFS) 시도한다.
     돌려주는 값: (사용한 구분, 행 목록)"""
     last = ("013", "조회된 데이터가 없습니다.")
     for fs in order:
         res = _get(http, API + "fnlttSinglAcntAll.json", {
             "crtfc_key": key, "corp_code": corp_code, "bsns_year": str(year),
-            "reprt_code": "11011", "fs_div": fs}, TIMEOUT)
+            "reprt_code": reprt, "fs_div": fs}, TIMEOUT)
         try:
             j = res.json()
         except ValueError:
@@ -161,8 +164,8 @@ def _id_suffix(i) -> str:
     return re.sub(r"^(ifrs-full|ifrs_full|ifrs|dart)_", "", str(i or ""))
 
 
-def extract_accounts(rows: list[dict]) -> dict:
-    """행 목록에서 METRICS 계정을 찾아 {key: {cur, prev, prev2, id, nm}} (못 찾으면 None)."""
+def find_rows(rows: list[dict]) -> dict:
+    """행 목록에서 METRICS 계정에 해당하는 행을 찾는다. {key: 행 또는 None}"""
     out = {}
     for m in METRICS:
         cand = [r for r in rows if r.get("sj_div") in m["sj"]]
@@ -172,7 +175,15 @@ def extract_accounts(rows: list[dict]) -> dict:
                 hit = next((r for r in cand if re.match(pat, _norm_acct(r.get("account_nm")))), None)
                 if hit:
                     break
-        out[m["key"]] = None if hit is None else {
+        out[m["key"]] = hit
+    return out
+
+
+def extract_accounts(rows: list[dict]) -> dict:
+    """행 목록에서 METRICS 계정을 찾아 {key: {cur, prev, prev2, id, nm}} (못 찾으면 None)."""
+    out = {}
+    for k, hit in find_rows(rows).items():
+        out[k] = None if hit is None else {
             "cur": parse_amount(hit.get("thstrm_amount")),
             "prev": parse_amount(hit.get("frmtrm_amount")),
             "prev2": parse_amount(hit.get("bfefrmtrm_amount")),
@@ -195,8 +206,9 @@ def ratios(v: dict, before: dict | None = None) -> dict:
     prev_rev = (before or {}).get("rev")
     return {
         "growth": None if rev is None or prev_rev in (None, 0) else (rev - prev_rev) / abs(prev_rev),
-        "op_margin": _div(op, rev),
-        "net_margin": _div(net, rev),
+        # 매출이 0 이하(일부 금융·지주회사)면 이익률이 의미가 없어 계산하지 않음
+        "op_margin": _div(op, rev) if rev is not None and rev > 0 else None,
+        "net_margin": _div(net, rev) if rev is not None and rev > 0 else None,
         "debt": _div(liab, eq) if pos_eq else None,
         "current": _div(v.get("ca"), v.get("cl")),
         "roe": _div(net, eq) if pos_eq else None,

@@ -45,10 +45,10 @@ def series(base: str, quote: str, start: str, end: str, http=requests) -> list[t
     return out
 
 
-def period_average(ser: list[tuple[str, float]], end: str) -> float | None:
-    """결산일까지 1년(365일) 평균."""
+def period_average(ser: list[tuple[str, float]], end: str, days: int = 365) -> float | None:
+    """결산일까지 기간(기본 1년, 분기는 91일) 평균."""
     e = date.fromisoformat(end)
-    s = (e - timedelta(days=364)).isoformat()
+    s = (e - timedelta(days=days - 1)).isoformat()
     vals = [v for d, v in ser if s <= d <= end]
     return sum(vals) / len(vals) if vals else None
 
