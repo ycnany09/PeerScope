@@ -160,7 +160,8 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     at.radio(key="qpick").set_value("영업이익률").run()
     at.radio(key="px_span").set_value("3년").run()
     t_ = " ".join(m.value for m in at.markdown)
-    assert 'href="https://finance.naver.com/item/main.naver?code=035760"' in t_  # 키가 있어도 바로가기 표시
+    assert 'href="https://search.naver.com/search.naver?query=%EC%94%A8%EC%A0%9C%EC%9D%B4%EC%9D%B4%EC%97%94%EC%97%A0%20%EC%A3%BC%EA%B0%80"' in t_  # 씨제이이엔엠 주가
+    assert "네이버에서 주가 보기" in t_
     assert not at.exception, at.exception
     # 원화 → 달러
     at.radio(key="show_cur").set_value("달러로 표기").run()

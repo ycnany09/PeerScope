@@ -1059,7 +1059,8 @@ with tab_px:
         if not code:
             return '<span class="flat">–</span>'
         if c["market"] == "KR":
-            url, site = f"https://finance.naver.com/item/main.naver?code={quote(code)}", "네이버 증권"
+            # 네이버 증권 종목 주소는 휴대폰에서 증권 첫 화면으로 넘어가 버려서, PC·모바일 모두 되는 네이버 검색(주가 카드)으로 연결
+            url, site = f"https://search.naver.com/search.naver?query={quote(c['name'] + ' 주가')}", "네이버"
         else:
             url, site = f"https://finance.yahoo.com/quote/{quote(code)}", "Yahoo Finance"
         return f'<a class="pxlink" href="{e(url)}" target="_blank" rel="noopener">{site}에서 주가 보기</a>'
