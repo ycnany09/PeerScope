@@ -97,6 +97,9 @@ def test_kr_prices_paging_and_filter():
     with pytest.raises(prices.PriceError) as ex:
         prices.kr_prices("BADKR", "005930", date(2026, 1, 1), date(2026, 2, 1), http=H)
     assert "인증키" in str(ex.value)
+    # 끝날 포함 (endBasDt 는 '미만' 조건이라 하루 뒤로 요청)
+    rows = prices.kr_prices("KEY", "005930", date(2026, 11, 16), date(2026, 11, 20), http=H)
+    assert rows[-1]["date"] >= "2026-11-20"
 
 
 def test_us_prices():
@@ -150,7 +153,7 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     assert "4분기(2024 3Q, 2025 3Q, 2025 4Q)는 연간 실적에서" in caps
     assert "분기 데이터 없음: 하이브" in " ".join(c.value for c in at.caption)
     # 주가: 국내는 키 있음 → 표, 미국은 키 없음 → 안내
-    assert "TWELVE_DATA_KEY" in t and "1년 수익률" in t
+    assert "Twelve Data 키(TWELVE_DATA_KEY)를 설정하면" in t and "1년 수익률" in t
     assert any(s_.label == "회사 선택" for s_ in at.selectbox)
     # 분기 지표·주가 기간 바꾸기
     at.radio(key="qpick").set_value("영업이익률").run()
@@ -160,3 +163,30 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     at.radio(key="show_cur").set_value("달러로 표기").run()
     assert not at.exception, at.exception
     assert "<td>11,300</td>" in " ".join(m.value for m in at.markdown)  # 마이크론 분기 매출 (백만 달러)
+
+
+def test_price_tab_hidden_without_keys(monkeypatch, tmp_path):
+    F.CALLS.clear()
+    monkeypatch.setattr(requests, "get", F.fake_get)
+    monkeypatch.setenv("PEERSCOPE_KR_CACHE", "/nonexistent/kr.json.gz")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
+    at.run()
+    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.selectbox[0].set_value(2025)
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    t = " ".join(m.value for m in at.markdown)
+    assert "개인 PC에서 실행할 때만" in t
+    assert not any(r.key == "px_span" for r in at.radio)
+    assert not any("twelvedata" in u or "apis.data.go.kr" in u for u, _ in F.CALLS)
+
+
+def test_run_local_writes_keys_outside_project(tmp_path):
+    import run_local
+    path = tmp_path / ".streamlit" / "secrets.toml"
+    answers = iter(['"abc"', "", 'Jimin "J" Kim a@b.com'])
+    run_local.write_keys(ask=lambda _: next(answers), path=str(path))
+    import tomllib
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data == {"DATA_GO_KR_KEY": "abc", "SEC_USER_AGENT": 'Jimin "J" Kim a@b.com'}

@@ -865,8 +865,11 @@ with tab_pos:
 
 with tab_px:
     KR_PX_KEY, US_PX_KEY = secret("DATA_GO_KR_KEY"), secret("TWELVE_DATA_KEY")
-    span = st.radio("기간", ["3개월", "6개월", "1년", "3년"], index=2, horizontal=True, key="px_span",
-                    label_visibility="collapsed")
+    if not KR_PX_KEY and not US_PX_KEY:
+        show('<div class="info">주가는 데이터 제공처(한국거래소·Twelve Data)의 이용 조건상 공개 웹사이트에 표시할 수 없어, '
+             '<b>개인 PC에서 실행할 때만</b> 보입니다.<br>내 PC에서 <b>run_app.bat</b>을 실행하면 이 탭에 주가 차트가 나옵니다.</div>')
+    span = (st.radio("기간", ["3개월", "6개월", "1년", "3년"], index=2, horizontal=True, key="px_span",
+                     label_visibility="collapsed") if (KR_PX_KEY or US_PX_KEY) else "1년")
     days = {"3개월": 92, "6개월": 183, "1년": 366, "3년": 1096}[span]
     end_d = date.today()
     start_d = end_d - timedelta(days=days)
@@ -874,9 +877,10 @@ with tab_px:
     for c in cos:
         mkey = KR_PX_KEY if c["market"] == "KR" else US_PX_KEY
         if not mkey:
-            px_err.append(f"<b>{e(c['name'])}</b> " + ("Secrets에 DATA_GO_KR_KEY(공공데이터포털 인증키)를 추가하면 표시됩니다."
-                                                   if c["market"] == "KR" else
-                                                   "Secrets에 TWELVE_DATA_KEY(Twelve Data API 키)를 추가하면 표시됩니다."))
+            if KR_PX_KEY or US_PX_KEY:
+                px_err.append(f"<b>{e(c['name'])}</b> " + ("공공데이터포털 인증키(DATA_GO_KR_KEY)를 설정하면 표시됩니다."
+                                                       if c["market"] == "KR" else
+                                                       "Twelve Data 키(TWELVE_DATA_KEY)를 설정하면 표시됩니다."))
             continue
         try:
             series[c["name"]] = load_prices(c["market"], c["stock"], start_d.isoformat(), end_d.isoformat(),
@@ -941,8 +945,10 @@ with tab_px:
             f.update_yaxes(tickformat=",.0f", row=2, col=1)
             st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
             st.caption("빨강은 상승(종가 ≥ 시가), 파랑은 하락입니다. 가격은 각 시장 통화(원·달러) 그대로입니다.")
-    st.caption("국내 시세: 금융위원회 주식시세정보(공공데이터포털, 영업일 하루 뒤 공개). 미국 시세: Twelve Data 일봉. "
-               "수익률 비교는 통화와 관계없이 각 주가의 등락률입니다.")
+    if KR_PX_KEY or US_PX_KEY:
+        st.caption("국내 시세: 금융위원회 주식시세정보(공공데이터포털, 원천 한국거래소, 영업일 하루 뒤 공개). "
+                   "미국 시세: Twelve Data 일봉. 수익률 비교는 통화와 관계없이 각 주가의 등락률입니다. "
+                   "개인 분석용이며 데이터를 제3자에게 제공·재배포할 수 없습니다.")
 
 with tab5:
     head = (th("회사", left=True) + th("통화") + th("항목", left=True) + th("계정 ID", left=True) + th("계정명", left=True)

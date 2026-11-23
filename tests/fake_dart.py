@@ -307,7 +307,9 @@ def kr_price_items(code, start, end):
 def price_response(url, params):
     if "apis.data.go.kr" in url:
         if params.get("serviceKey") == "BADKR":
-            return Resp(b"<OpenAPI_ServiceResponse>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</OpenAPI_ServiceResponse>")
+            return Resp(b"Unauthorized", code=401)
+        if "GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2" not in url:
+            return Resp(b"API not found", code=404)
         s, e = params["beginBasDt"], params["endBasDt"]
         items = kr_price_items(params["likeSrtnCd"], f"{s[:4]}-{s[4:6]}-{s[6:]}", f"{e[:4]}-{e[4:6]}-{e[6:]}")
         page, n = int(params["pageNo"]), int(params["numOfRows"])

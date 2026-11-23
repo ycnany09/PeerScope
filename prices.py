@@ -6,11 +6,12 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
-KR_API = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo"
+# 공식 활용가이드(V2) 기준 주소
+KR_API = "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
 US_API = "https://api.twelvedata.com/time_series"
 TIMEOUT = (10, 30)
 
@@ -33,15 +34,23 @@ def kr_prices(service_key: str, stock_code: str, start: date, end: date, http=re
             res = http.get(KR_API, params={
                 "serviceKey": service_key, "resultType": "json", "numOfRows": 1000, "pageNo": page,
                 "likeSrtnCd": stock_code, "beginBasDt": start.strftime("%Y%m%d"),
-                "endBasDt": end.strftime("%Y%m%d")}, timeout=TIMEOUT)
+                # endBasDt 는 '보다 작은' 날짜만 찾으므로 하루 뒤로 넣어야 끝날이 포함된다
+                "endBasDt": (end + timedelta(days=1)).strftime("%Y%m%d")}, timeout=TIMEOUT)
         except requests.RequestException:
             raise PriceError("공공데이터포털 시세 서버에 연결하지 못했습니다. 해외 서버의 접속이 막혀 있을 수 있습니다.") from None
+        text = getattr(res, "text", "") or ""
+        # 공식 가이드의 오류 메시지 (본문이 JSON이 아닐 수 있어 글자로 먼저 확인)
+        for sign, msg in (("Unauthorized", "공공데이터포털 인증키가 없거나 올바르지 않습니다."),
+                          ("SERVICE_KEY_IS_NOT_REGISTERED", "공공데이터포털 인증키가 아직 등록되지 않았습니다. 잠시 후 다시 시도하세요."),
+                          ("Forbidden", "주식시세정보 활용신청 내역이 확인되지 않습니다. 신청·승인 상태를 확인하세요."),
+                          ("API token quota exceeded", "공공데이터포털 하루 호출 한도를 넘었습니다. 내일 다시 시도하세요."),
+                          ("API rate limit exceeded", "공공데이터포털 요청이 몰려 있습니다. 잠시 후 다시 시도하세요."),
+                          ("API not found", "공공데이터포털 API 주소가 바뀌었습니다.")):
+            if sign in text[:500]:
+                raise PriceError(msg)
         try:
             j = res.json()
         except ValueError:
-            text = res.text if hasattr(res, "text") else ""
-            if "SERVICE_KEY_IS_NOT_REGISTERED" in text or "SERVICE KEY" in text.upper():
-                raise PriceError("공공데이터포털 인증키가 등록되지 않았거나, 주식시세정보 활용신청이 아직 승인되지 않았습니다.") from None
             raise PriceError(f"공공데이터포털 응답을 읽지 못했습니다 (HTTP {res.status_code}).") from None
         resp = j.get("response", {})
         head = resp.get("header", {})
