@@ -467,7 +467,10 @@ else:
     cos, excluded = [], []
     for c in cos_annual:
         tv, why = q_view(c, year, sel_labels)
-        (cos.append(tv) if tv else excluded.append((c["name"], why)))
+        if tv:
+            cos.append(tv)
+        else:
+            excluded.append((c["name"], why))
 N_Q = len(sel_labels) if sel_labels else 4
 
 
