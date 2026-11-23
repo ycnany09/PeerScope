@@ -119,6 +119,10 @@ def read_key(ask=input) -> str:
     return k
 
 
+def _no_ask(prompt: str) -> str:
+    raise Stop("저장된 DART 인증키가 없습니다. collect_kr.bat을 한 번 직접 실행해서 키를 저장하세요.")
+
+
 def _save_json(path: str, obj: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -193,6 +197,7 @@ def main(argv=None):
     ap.add_argument("--new-key", action="store_true", help="저장된 인증키를 지우고 새로 입력")
     ap.add_argument("--quarter", default=quarter.latest_quarter(), help="수집할 최신 분기 (예: 2026Q3)")
     ap.add_argument("--force", action="store_true", help="이미 최신이어도 다시 수집")
+    ap.add_argument("--auto", action="store_true", help="자동 갱신용: 아무것도 묻지 않음 (저장된 키가 없으면 멈춤)")
     args = ap.parse_args(argv)
     print("=" * 56)
     print(" 피어스코프 국내 재무 데이터 수집기")
@@ -201,7 +206,7 @@ def main(argv=None):
     try:
         if args.new_key and os.path.exists(KEY_FILE):
             os.remove(KEY_FILE)
-        key = read_key()
+        key = read_key(ask=_no_ask) if args.auto else read_key()
         annual = _read_gz(OUT)
         if args.force or not annual or int(annual.get("base_year", 0)) < args.year:
             annual = collect(key, args.year)
@@ -212,7 +217,8 @@ def main(argv=None):
             collect_quarterly(key, args.quarter, annual)
         else:
             print(f"분기 데이터도 이미 최신입니다 ({qd['latest']}까지).")
-        print("\n다음 단계: 이 폴더의 data 폴더를 GitHub 저장소에 올리세요.")
+        if not args.auto:
+            print("\n다음 단계: 이 폴더의 data 폴더를 GitHub 저장소에 올리세요.")
         return 0
     except Stop as e:
         print(f"\n멈춤: {e}")

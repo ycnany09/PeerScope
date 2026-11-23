@@ -22,6 +22,7 @@ import fx
 import prices
 import quarter
 import sec
+import us_names
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="피어스코프 | 경쟁사 재무 비교", layout="wide")
@@ -216,13 +217,20 @@ def style_fig(fig: go.Figure, y_fmt: str, height: int = 360) -> go.Figure:
         template="simple_white", height=height, margin=dict(l=8, r=8, t=30, b=8),
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(family=FONT, size=12, color=SUB),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title=None, font=dict(color=INK)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title=None, font=dict(color=INK),
+                    itemclick=False, itemdoubleclick=False),  # 범례를 잘못 눌러 회사가 사라지지 않게
         hoverlabel=dict(bgcolor="white", font=dict(family=FONT, color=INK)),
+        dragmode=False,  # 휴대폰에서 스크롤하다 끌면 확대되던 문제 방지 (눌러서 값 보기는 그대로)
     )
     fig.update_yaxes(tickformat=y_fmt, showgrid=True, gridcolor="#edf0f4", linecolor="#cfd6de",
                      zeroline=True, zerolinecolor="#b8c1cc", ticks="")
     fig.update_xaxes(type="category", showgrid=False, linecolor="#cfd6de", ticks="")
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
     return fig
+
+
+PCFG = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}  # 확대·축소 없이 보기 전용
 
 
 # ───────────── 머리말 ─────────────
@@ -267,7 +275,7 @@ if not UA:
     us_msg = "미국 기업을 조회하려면 Secrets에 SEC_USER_AGENT(이름과 이메일)를 추가하세요."
 else:
     try:
-        US_LABEL = {f"{c['title']} ({c['ticker']})": c for c in load_us_list(UA)}
+        US_LABEL = {us_names.label(c["title"], c["ticker"]): c for c in load_us_list(UA)}
     except Exception as ex:
         us_msg = f"SEC 기업 목록을 받지 못했습니다. ({dart.scrub(ex)})"
 
@@ -280,7 +288,7 @@ with st.form("pick"):
                             placeholder="회사명 또는 종목코드 검색", disabled=not LABEL,
                             help=kr_msg or "DART에 사업보고서를 내는 국내 상장사")
     picked_us = m2.multiselect("미국 상장 기업 (SEC)", list(US_LABEL), max_selections=MAX_CO,
-                               placeholder="영문 회사명 또는 티커 검색 (예: MU, AAPL)",
+                               placeholder="한글·영문 회사명 또는 티커 (예: 엔비디아, 코카콜라, AAPL)",
                                disabled=not US_LABEL, help=us_msg or "미국 SEC에 연간 보고서를 내는 기업")
     c2, _, c3 = st.columns([2.4, 6, 1.6], vertical_alignment="bottom")
     basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True, disabled=KR is not None,
@@ -810,7 +818,7 @@ with tab3:
                 line=dict(width=2, color=COLOR[c["name"]]), marker=dict(size=7, color=COLOR[c["name"]]),
                 hovertemplate=("%{y:,.0f} " + UNIT if is_amt else "%{y:.1%}") + "<extra>" + c["name"] + "</extra>"))
         fig.update_layout(hovermode="x unified")
-        st.plotly_chart(style_fig(fig, ",.0f" if is_amt else ".0%"), width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(style_fig(fig, ",.0f" if is_amt else ".0%"), width="stretch", config=PCFG)
         fmt = (lambda v: "–" if v is None else f"{v:,.0f}") if is_amt else n_pct
         tr = "".join(f"<tr>{co_cell(c)}" + "".join(f"<td>{fmt(val(c, y))}</td>" for y in YRS) + "</tr>" for c in cos_annual)
         show(f'<div class="scroll"><table class="grid"><thead><tr>{th("회사", left=True)}'
@@ -840,7 +848,7 @@ with tab4:
             style_fig(f, ".0%" if pct else ".1f", height=280)
             f.update_yaxes(showticklabels=False, showgrid=False, linecolor="white")
             with dc:
-                st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+                st.plotly_chart(f, width="stretch", config=PCFG)
                 st.caption(comp["desc"])
 
         def times(v, u):
@@ -935,7 +943,7 @@ with tab_q:
                                              marker=dict(size=7, color=COLOR[c["name"]]), hovertemplate=hov))
             fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08, hovermode="x unified")
             st.plotly_chart(style_fig(fig, ",.0f" if kind == "amt" else ".0%"), width="stretch",
-                            config={"displayModeBar": False})
+                            config=PCFG)
             tr = "".join(f"<tr>{co_cell(c)}" + "".join(
                 f"<td>{('–' if qval(c, lb) is None else (f'{qval(c, lb):,.0f}' if kind == 'amt' else n_pct(qval(c, lb))))}</td>"
                 for lb in labels) + "</tr>" for c in qcos)
@@ -993,7 +1001,7 @@ with tab_pos:
                              showgrid=True, gridcolor="#edf0f4", range=[min(xs_) - padx, max(xs_) + padx])
             fig.update_yaxes(range=[min(ys_) - pady, max(ys_) + pady * 1.4])
             fig.update_yaxes(title=dict(text=ylabel, font=dict(size=12)))
-            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(fig, width="stretch", config=PCFG)
             st.caption("점선은 비교 회사들의 중앙값, 원 크기는 매출액입니다.")
 
     pc1, pc2 = st.columns(2)
@@ -1036,7 +1044,7 @@ with tab_pos:
                 style_fig(f, ".0%", height=110 + 46 * len(rows_))
                 f.update_xaxes(type="linear", range=[0, 1], showgrid=False, showticklabels=False)
                 f.update_yaxes(type="category", autorange="reversed", showgrid=False)
-                st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+                st.plotly_chart(f, width="stretch", config=PCFG)
 
         stack(sc1, "자금 조달: 부채 vs 자본", [("liab", "부채", "#0b3b75"), ("equity", "자본", "#c7d3e3")])
         stack(sc2, "자산 구성: 유동 vs 비유동", [("ca", "유동자산", "#0b3b75"), ("nca", "비유동자산", "#c7d3e3")])
@@ -1105,7 +1113,7 @@ with tab_px:
             fig.update_layout(hovermode="x unified")
             style_fig(fig, "+.0%")
             fig.update_xaxes(type="date")
-            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(fig, width="stretch", config=PCFG)
             tr = []
             for c in cos:
                 rows_ = series.get(c["name"])
@@ -1140,7 +1148,7 @@ with tab_px:
             style_fig(f, ",.0f" if cc["market"] == "KR" else ",.2f", height=460)
             f.update_xaxes(type="date")
             f.update_yaxes(tickformat=",.0f", row=2, col=1)
-            st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(f, width="stretch", config=PCFG)
             st.caption("빨강은 상승(종가 ≥ 시가), 파랑은 하락입니다. 가격은 각 시장 통화(원·달러) 그대로입니다.")
     if KR_PX_KEY or US_PX_KEY:
         show(panel("주가 바로가기", link_tbl, "외부 시세 사이트로 연결합니다. 링크는 새 창에서 열립니다."))

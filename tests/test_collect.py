@@ -116,7 +116,7 @@ def test_app_reads_cache_without_dart(tmp_path, monkeypatch):
     assert not at.multiselect[0].disabled
     assert any("국내 데이터:" in c.value and "2025년 사업보고서까지" in c.value for c in at.caption)
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)", "제이와이피엔터테인먼트 (035900)"])
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     F.annual(at, 2025)
     assert not at.exception, at.exception

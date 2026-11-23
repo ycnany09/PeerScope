@@ -40,7 +40,7 @@ def test_no_key_us_still_works(monkeypatch):
     assert not at.exception
     assert at.multiselect[0].disabled and not at.multiselect[1].disabled
     assert any("DART_API_KEY" in c.value for c in at.caption)
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     F.annual(at, 2025)
     assert not at.exception, at.exception
@@ -132,9 +132,9 @@ def test_too_many(monkeypatch):
 
 def test_kr_us_currency(monkeypatch):
     at = run_app(monkeypatch)
-    assert "MICRON TECHNOLOGY INC (MU)" in at.multiselect[1].options
+    assert "마이크론 · MICRON TECHNOLOGY INC (MU)" in at.multiselect[1].options
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)"])
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)", "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD (TSM)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)", "TSMC · TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD (TSM)"])
     at.button[0].click().run()
     F.annual(at, 2025)
     assert not at.exception, at.exception

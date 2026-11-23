@@ -44,6 +44,23 @@ DART(금융감독원 전자공시) 오픈API는 해외 IP의 접속을 받지 �
 - 분기 데이터는 분기·반기 보고서 공시 이후(5월·8월·11월 하순) 다시 실행하면 최신 분기까지 갱신되며, 이미 최신인 데이터는 건너뜁니다.
 - 4분기 실적은 별도 보고서가 없어 `연간 − 3분기 누적`으로 계산하고 화면에 계산값으로 표시합니다.
 
+### 자동 갱신
+
+수집 → GitHub 업로드까지 사람 손 없이 돌도록, 윈도우 작업 스케줄러가 매주 `auto_update.py`를 실행합니다.
+DART가 해외 IP를 막기 때문에 GitHub Actions 같은 클라우드 대신 한국 PC에서 돌립니다.
+
+```
+[매주 월요일, PC가 꺼져 있었으면 다음에 켤 때]
+작업 스케줄러 → auto_update.py
+  1) GitHub 저장소를 깨끗한 복사본(~/.peerscope_repo)으로 최신화
+  2) collect_kr.py --auto 실행 (새 공시가 없으면 몇 초 만에 "이미 최신"으로 끝남)
+  3) 데이터 파일이 바뀌었을 때만 커밋 → GitHub에 push → Streamlit 앱이 새 데이터로 갱신
+  4) 결과를 auto_update.log에 기록
+```
+
+- 처음 한 번 `setup_auto.bat`을 실행하면 GitHub 로그인 확인과 작업 등록이 끝납니다. 끄려면 `remove_auto.bat`.
+- 사람이 웹에서 코드를 따로 올려도 다음 갱신은 그 최신 상태 위에 데이터만 올립니다. 수집이 중간에 멈추면 아무것도 올리지 않고, 다음 실행 때 이어서 수집합니다.
+
 ## 계산 방식
 
 | 지표 | 계산 |
@@ -85,6 +102,7 @@ data/             수집한 국내 데이터 (kr_financials.json.gz)
 fx.py             환율
 quarter.py        분기 실적 (국내 분기·반기 보고서, 미국 10-Q, TTM)
 prices.py         주가
+auto_update.py    자동 갱신 (setup_auto.bat으로 한 번 등록, remove_auto.bat으로 해제)
 tests/            가짜 DART 응답과 자동 테스트
 ```
 

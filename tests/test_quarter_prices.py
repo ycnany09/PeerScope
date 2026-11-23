@@ -138,7 +138,7 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     at.run()
     assert any("분기는 2026년 3분기까지" in c.value for c in at.caption)
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)"])
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     F.annual(at, 2025)
     assert not at.exception, at.exception
@@ -175,7 +175,7 @@ def test_price_tab_hidden_without_keys(monkeypatch, tmp_path):
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
     at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
     at.run()
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     F.annual(at, 2025)
     assert not at.exception, at.exception
@@ -207,7 +207,7 @@ def test_app_ttm_mode(tmp_path, monkeypatch):
     at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
     at.run()
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)"])
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     assert not at.exception, at.exception
     t = " ".join(m.value for m in at.markdown)
@@ -255,7 +255,7 @@ def test_app_pick_quarters(tmp_path, monkeypatch):
     at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
     at.run()
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)"])
-    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.multiselect[1].set_value(["마이크론 · MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
     assert at.radio(key="pmode").value == "최근 4개 분기"  # 기본값
 
@@ -317,3 +317,15 @@ def test_app_pick_quarters(tmp_path, monkeypatch):
     # 사업연도로 돌아가면 연간 화면
     F.annual(at, 2025)
     assert "2025 회계연도 재무 비교" in text()
+
+    # 모든 차트: 끌어서 확대·범례 클릭으로 숨기기 금지 (휴대폰 스크롤 중 오작동 방지)
+    charts = at.get("plotly_chart")
+    assert len(charts) >= 5
+    for ch in charts:
+        spec, cfg = json.loads(ch.proto.spec), json.loads(ch.proto.config)
+        lay = spec["layout"]
+        assert lay["dragmode"] is False
+        assert lay["legend"]["itemclick"] is False
+        axes = [v for k, v in lay.items() if k.startswith(("xaxis", "yaxis"))]
+        assert axes and all(ax.get("fixedrange") is True for ax in axes)
+        assert cfg.get("scrollZoom") is False and cfg.get("doubleClick") is False

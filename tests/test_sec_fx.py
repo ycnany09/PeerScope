@@ -88,3 +88,16 @@ def test_fx_latest_and_series():
     assert fx.on_date(ser, "2025-08-30") == pytest.approx(F.usdkrw("2025-08-29"))
     assert fx.on_date(ser, "2023-01-01") is None
     assert fx.on_date([("2025-01-01", 1.0)], "2025-02-01") is None  # 7일 넘게 빔
+
+
+def test_us_korean_labels():
+    import us_names
+    assert us_names.label("NVIDIA CORP", "NVDA") == "엔비디아 · NVIDIA CORP (NVDA)"
+    assert us_names.label("COCA COLA CO", "KO") == "코카콜라 · COCA COLA CO (KO)"
+    assert us_names.label("Apple Inc.", "AAPL").startswith("애플 · ")
+    assert "구글" in us_names.label("Alphabet Inc.", "GOOGL")
+    assert us_names.label("SOME SMALL CO", "ZZZZ") == "SOME SMALL CO (ZZZZ)"  # 목록에 없으면 영문 그대로
+    # 같은 한글 이름이 서로 다른 회사에 붙지 않았는지 (알파벳·버크셔 주식 종류는 같은 회사라 예외)
+    from collections import Counter
+    dup = {k: n for k, n in Counter(us_names.KO.values()).items() if n > 1}
+    assert set(dup) <= {"알파벳(구글)", "버크셔 해서웨이"}
