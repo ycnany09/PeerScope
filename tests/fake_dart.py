@@ -368,3 +368,10 @@ def cj_q3_2025():
 
 
 QFIN[("00265324", "2025", "11014", "CFS")] = {"status": "000", "list": cj_q3_2025()}
+
+
+def annual(at, y=2025):
+    """조회 후 기준 기간을 '사업연도 y'로 바꾼다."""
+    at.radio(key="pmode").set_value("사업연도").run()
+    at.selectbox(key="p_year").set_value(y).run()
+    return at

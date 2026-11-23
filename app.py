@@ -278,14 +278,7 @@ with st.form("pick"):
     picked_us = m2.multiselect("미국 상장 기업 (SEC)", list(US_LABEL), max_selections=MAX_CO,
                                placeholder="영문 회사명 또는 티커 검색 (예: MU, AAPL)",
                                disabled=not US_LABEL, help=us_msg or "미국 SEC에 연간 보고서를 내는 기업")
-    c1, c2, _, c3 = st.columns([2, 2.4, 4, 1.6], vertical_alignment="bottom")
-    dy = default_year()
-    PERIODS = ["TTM"] + YEARS
-    year = c1.selectbox("기준 기간", PERIODS, index=0,
-                        format_func=lambda v: "최근 4개 분기 (최신)" if v == "TTM" else f"{v} 사업연도",
-                        help="최근 4개 분기: 가장 최근 분기까지 1년 실적(TTM)으로 비교합니다. "
-                             "사업연도: 1년 실적 보고서 기준이며, 그해를 포함해 5개년 추이를 보여 줍니다. "
-                             "미국 기업은 결산일이 속한 회계연도 기준입니다 (1~3월 결산은 직전 연도).")
+    c2, _, c3 = st.columns([2.4, 6, 1.6], vertical_alignment="bottom")
     basis = c2.radio("재무제표 (국내)", ["연결 우선", "개별"], horizontal=True, disabled=KR is not None,
                      help=("수집 데이터는 연결재무제표 우선 기준입니다 (연결이 없으면 개별)." if KR is not None
                            else "연결: 종속회사 포함 / 개별: 해당 법인 단독"))
@@ -302,16 +295,31 @@ if go_btn:
     if total == 0 or total > MAX_CO:
         show('<div class="notice"><div>' + ("비교할 회사를 1개 이상 선택하세요." if total == 0 else
              f"국내와 미국 기업을 합쳐 최대 {MAX_CO}개까지 비교할 수 있습니다. (현재 {total}개)") + "</div></div>")
-        st.session_state.pop("result", None)
+        st.session_state.pop("query", None)
         st.stop()
     jobs = [("KR", LABEL[lb]) for lb in picked] + [("US", US_LABEL[lb]) for lb in picked_us]
-    mode = "TTM" if year == "TTM" else "annual"
-    year = default_year() if year == "TTM" else int(year)  # 연간 데이터 기준연도 (TTM 이면 가장 최근 사업연도)
+    st.session_state["query"] = {"jobs": jobs, "basis": basis}
+
+query = st.session_state.get("query")
+if not query:
+    show('<div class="info">비교할 회사를 선택하고 <b>조회</b>를 누르세요.<br>'
+         '같은 업종의 경쟁사끼리 비교할 때 가장 의미 있는 결과가 나옵니다. 국내와 미국 기업을 함께 고를 수 있습니다.</div>')
+    st.stop()
+
+
+def qname_(lb: str) -> str:
+    y_, q_ = quarter.parse(lb)
+    return f"{y_} {q_}Q"
+
+
+def load_all(jobs, year: int, basis: str, with_bar: bool):
+    """고른 회사들의 연간 데이터(year 기준 5개년)와 분기 데이터를 불러온다."""
     cos, errors = [], []
-    bar = st.progress(0.0, text="재무제표 조회 중")
+    bar = st.progress(0.0, text="재무제표 조회 중") if with_bar else None
     for i, (mk, comp) in enumerate(jobs):
         nm = comp["name"] if mk == "KR" else comp["title"]
-        bar.progress(i / len(jobs), text=f"{nm} 재무제표 조회 중")
+        if bar:
+            bar.progress(i / len(jobs), text=f"{nm} 재무제표 조회 중")
         try:
             if mk == "KR" and KR is not None:
                 entry = KR["companies"].get(comp["code"])
@@ -337,18 +345,80 @@ if go_btn:
             errors.append((nm, why))
         except Exception as ex:
             errors.append((nm, f"연결 오류: {dart.scrub(ex)}"))
-    bar.empty()
-    st.session_state["result"] = {"cos": cos, "errors": errors, "year": int(year), "basis": basis, "mode": mode}
+    if bar:
+        bar.empty()
+    return cos, errors
 
-res = st.session_state.get("result")
-if not res:
-    show('<div class="info">비교할 회사를 선택하고 <b>조회</b>를 누르세요.<br>'
-         '같은 업종의 경쟁사끼리 비교할 때 가장 의미 있는 결과가 나옵니다. 국내와 미국 기업을 함께 고를 수 있습니다.</div>')
-    st.stop()
 
-cos_annual: list[dict] = res["cos"]
-year_annual: int = res["year"]
-MODE = res.get("mode", "annual")
+# ───────────── 기준 기간 ─────────────
+
+PMODES = {"최근 4개 분기": "TTM", "한 분기": "ONE", "분기 범위": "RANGE", "분기 직접 선택": "PICK", "사업연도": "annual"}
+pb1, pb2 = st.columns([5, 4], vertical_alignment="bottom")
+pmode = pb1.radio(
+    "기준 기간", list(PMODES), horizontal=True, key="pmode",
+    help="최근 4개 분기: 회사마다 가장 최근 분기까지 1년 합계(TTM).\n\n"
+         "한 분기: 고른 분기 3개월 실적.\n\n"
+         "분기 범위: 시작~끝 분기를 이어서 합계.\n\n"
+         "분기 직접 선택: 체크한 분기들의 합계.\n\n"
+         "사업연도: 1년 실적 보고서 기준.\n\n"
+         "분기 보기의 증감은 1년 전 같은 분기(들)와 비교합니다. 미국 기업은 회계분기의 가운데 달이 속한 "
+         "달력 분기로 맞춥니다 (예: 5~7월 분기 → 2분기).")
+MODE = PMODES[pmode]
+dy = default_year()
+if MODE == "annual":
+    if st.session_state.get("p_year") not in YEARS:
+        st.session_state["p_year"] = dy if dy in YEARS else YEARS[0]
+    load_year = pb2.selectbox("사업연도", YEARS, key="p_year", format_func=lambda v: f"{v} 사업연도",
+                              help="그해를 포함해 5개년 추이를 보여 줍니다. 미국 기업은 결산일이 속한 회계연도 기준입니다 "
+                                   "(1~3월 결산은 직전 연도).")
+else:
+    load_year = dy  # 분기 보기에서도 5개년 추이·원본 데이터는 가장 최근 사업연도 기준
+
+cos_annual, load_errors = load_all(query["jobs"], int(load_year), query["basis"], with_bar=bool(go_btn))
+res = {"errors": load_errors, "basis": query["basis"]}
+year_annual: int = int(load_year)
+
+QOPTS = sorted({lb for c in cos_annual for lb in ((c.get("quarters") or {}).get("q") or {})},
+               key=quarter.parse, reverse=True)
+sel_labels = None  # None = 회사별 최근 4개 분기 (TTM)
+if MODE in ("ONE", "RANGE", "PICK"):
+    if not QOPTS:
+        show('<div class="notice"><div>고른 회사 중 분기 데이터가 있는 회사가 없습니다. '
+             '<b>사업연도</b> 보기를 이용하세요.</div></div>')
+        st.stop()
+    # 모든 회사에 있는 가장 최근 분기를 기본값으로
+    common = [lb for lb in QOPTS if all(lb in ((c.get("quarters") or {}).get("q") or {})
+                                        for c in cos_annual if c.get("quarters"))]
+    base = common[0] if common else QOPTS[0]
+
+    def _ensure(key, default, ok):
+        if not ok(st.session_state.get(key)):
+            st.session_state[key] = default
+
+    if MODE == "ONE":
+        _ensure("p_q", base, lambda v: v in QOPTS)
+        sel_labels = [pb2.selectbox("분기", QOPTS, key="p_q", format_func=qname_)]
+    elif MODE == "RANGE":
+        start_default = quarter.shift(base, -3) if quarter.shift(base, -3) in QOPTS else QOPTS[-1]
+        _ensure("p_from", start_default, lambda v: v in QOPTS)
+        _ensure("p_to", base, lambda v: v in QOPTS)
+        r1, r2 = pb2.columns(2)
+        a_ = r1.selectbox("시작 분기", QOPTS, key="p_from", format_func=qname_)
+        b_ = r2.selectbox("끝 분기", QOPTS, key="p_to", format_func=qname_)
+        lo, hi = sorted([a_, b_], key=quarter.parse)
+        sel_labels = []
+        lb = lo
+        while quarter.parse(lb) <= quarter.parse(hi):
+            sel_labels.append(lb)
+            lb = quarter.shift(lb, 1)
+    else:
+        _ensure("p_pick", [base], lambda v: isinstance(v, list) and all(x in QOPTS for x in v))
+        picked_q = pb2.multiselect("분기 (여러 개 선택 가능)", QOPTS, key="p_pick", format_func=qname_,
+                                   placeholder="합계로 볼 분기를 고르세요")
+        if not picked_q:
+            show('<div class="info">합계로 볼 분기를 하나 이상 고르세요.</div>')
+            st.stop()
+        sel_labels = quarter.sort_labels(picked_q)
 
 
 def _qend(c, lb):
@@ -356,51 +426,54 @@ def _qend(c, lb):
     return (q.get("period_end") or {}).get(lb) or (quarter.kr_quarter_end(lb) if c["market"] == "KR" else None)
 
 
-def ttm_view(c, key: int):
-    """회사 c 를 '최근 4개 분기 합계' 기준으로 바꾼 사본. 연간 화면 코드를 그대로 쓰도록 같은 모양으로 만든다."""
+def ptext(labels: list[str]) -> str:
+    if len(labels) == 1:
+        return qname_(labels[0])
+    if quarter.contiguous(labels):
+        return f"{qname_(labels[0])}~{qname_(labels[-1])}"
+    return ", ".join(qname_(x) for x in labels)
+
+
+def q_view(c, key: int, labels: list[str] | None):
+    """회사 c 를 '고른 분기 합계' 기준으로 바꾼 사본. labels=None 이면 그 회사의 최근 4개 분기.
+    연간 화면 코드를 그대로 쓰도록 같은 모양(years[key], years[key-1])으로 만든다. 못 만들면 (None, 이유)."""
     qd = c.get("quarters")
-    t = quarter.ttm(qd) if qd else None
+    if not qd:
+        return None, "분기 데이터가 없어"
+    if labels is None:
+        labels = quarter.last_n(qd["latest"], 4)
+    lacking = [lb for lb in labels if lb not in qd["q"]]
+    if lacking:
+        return None, ", ".join(qname_(x) for x in lacking) + " 데이터가 없어"
+    t = quarter.combine(qd, labels)
     if not t:
-        return None
-    latest = qd["latest"]
-    prev_latest = quarter.shift(latest, -4)
-    prev = {}
-    for k_ in quarter.FLOW:
-        vs = [qd["q"].get(lb, {}).get(k_) for lb in quarter.last_n(prev_latest, 4)]
-        if all(v is not None for v in vs):
-            prev[k_] = sum(vs)
-    for k_ in quarter.STOCK:
-        v = qd["q"].get(prev_latest, {}).get(k_)
-        if v is not None:
-            prev[k_] = v
-    pe = _qend(c, latest)
-    pe_prev = _qend(c, prev_latest) or (pe and str(int(pe[:4]) - 1) + pe[4:])
+        return None, "고른 분기의 손익 데이터가 없어"
+    pe = _qend(c, t["labels"][-1])
+    pe_prev = _qend(c, t["prev_labels"][-1]) or (pe and str(int(pe[:4]) - 1) + pe[4:])
     v = dict(c)
     v["years"] = {key: {"amount": t["amount"], "ratio": t["ratio"]},
-                  key - 1: {"amount": prev, "ratio": dart.ratios(prev, None)}}
+                  key - 1: {"amount": t["prev_amount"], "ratio": t["prev_ratio"]}}
     v["period_end"] = {y_: d for y_, d in ((key, pe), (key - 1, pe_prev)) if d}
     v["year"] = key
-    v["ttm_period"] = f"{quarter.shift(latest, -3)}~{latest}"
-    return v
+    v["q_sel"] = {key: t["labels"], key - 1: t["prev_labels"]}
+    v["q_labels"] = t["labels"]
+    return v, None
 
 
-if MODE == "TTM":
-    year = date.today().year
-    cos, no_ttm = [], []
-    for c in cos_annual:
-        tv = ttm_view(c, year)
-        (cos.append(tv) if tv else no_ttm.append(c["name"]))
+if MODE == "annual":
+    cos, year, excluded = cos_annual, year_annual, []
 else:
-    cos, year, no_ttm = cos_annual, year_annual, []
-
-def qname_(lb: str) -> str:
-    y_, q_ = quarter.parse(lb)
-    return f"{y_} {q_}Q"
+    year = date.today().year
+    cos, excluded = [], []
+    for c in cos_annual:
+        tv, why = q_view(c, year, sel_labels)
+        (cos.append(tv) if tv else excluded.append((c["name"], why)))
+N_Q = len(sel_labels) if sel_labels else 4
 
 
 # 조회 실패·참고 사항
 msgs = [f"<b>{e(n)}</b> 조회 제외: {e(w)}" for n, w in res["errors"]]
-msgs += [f"<b>{e(n)}</b> 최근 4개 분기 데이터가 없어 이 보기에서 제외 (사업연도 보기에서는 표시)" for n in no_ttm]
+msgs += [f"<b>{e(n)}</b> {e(w)} 이 보기에서 제외 (사업연도 보기에서는 표시)" for n, w in excluded]
 for c in cos:
     n = []
     if c["fell_back"]:
@@ -411,8 +484,10 @@ for c in cos:
         n.append(c["older_note"])
     pe = c["period_end"].get(year, "")
     if MODE == "TTM":
-        n.append("기간 " + "~".join(qname_(x) for x in c["ttm_period"].split("~")))
-    elif c["market"] == "US" and pe and not pe.endswith("-12-31"):
+        n.append("기간 " + ptext(c["q_labels"]))
+    if MODE != "annual" and c["market"] == "US" and pe and pe[5:] not in quarter.QEND.values():
+        n.append(f"실제 분기말 {pe}")
+    elif MODE == "annual" and c["market"] == "US" and pe and not pe.endswith("-12-31"):
         n.append(f"결산일 {pe}")
     if n:
         msgs.append(f"<b>{e(c['name'])}</b> " + " / ".join(e(x) for x in n))
@@ -446,17 +521,26 @@ def co_cell(c) -> str:
 
 basis_txt = ("국내는 연결재무제표 우선" if KR is not None or res.get("basis", "연결 우선") == "연결 우선"
              else "국내는 개별재무제표")
-_periods = sorted({c.get("ttm_period", "") for c in cos})
-_ptxt = ("~".join(qname_(x) for x in _periods[0].split("~")) if len(_periods) == 1 and _periods[0]
-         else "회사별 가장 최근 4개 분기")
-show(f'<div class="rhead"><div class="rtitle">{"최근 4개 분기 재무 비교 (" + _ptxt + ")" if MODE == "TTM" else str(year) + " 회계연도 재무 비교"}</div>'
+if MODE == "TTM":
+    _ps = {tuple(c["q_labels"]) for c in cos}
+    title = "최근 4개 분기 재무 비교 (" + (ptext(list(next(iter(_ps)))) if len(_ps) == 1 else "회사별 가장 최근 4개 분기") + ")"
+elif MODE == "annual":
+    title = f"{year} 회계연도 재무 비교"
+elif N_Q == 1:
+    title = f"{ptext(sel_labels)} 재무 비교 (분기 실적)"
+elif quarter.contiguous(sel_labels):
+    title = f"{ptext(sel_labels)} 재무 비교 ({N_Q}개 분기 합계)"
+else:
+    title = f"선택 분기 재무 비교 ({ptext(sel_labels)} 합계)"
+show(f'<div class="rhead"><div class="rtitle">{e(title)}</div>'
      f'<div class="rsub">{e(", ".join(names))} / {len(cos)}개사 / {basis_txt}</div></div>')
 
 cc1, cc2, _, cdl = st.columns([2.2, 2.8, 3, 1.4], vertical_alignment="bottom")
 show_cur = cc1.radio("금액 표시", ["원화로 표기", "달러로 표기"], horizontal=True, key="show_cur")
-rate_mode = cc2.radio("적용 환율", ["현재 환율", "연도별 환율"], horizontal=True, key="rate_mode",
-                      help="현재 환율: 모든 연도에 가장 최근 기준환율을 적용합니다.\n\n"
-                           "연도별 환율: 매출·이익은 해당 회계연도 1년 평균, 자산·부채·자본은 결산일 환율을 적용합니다.")
+rate_mode = cc2.radio("적용 환율", ["현재 환율", "기간별 환율"], horizontal=True, key="rate_mode",
+                      help="현재 환율: 모든 기간에 가장 최근 기준환율을 적용합니다.\n\n"
+                           "기간별 환율: 매출·이익은 그 기간 평균 환율(분기 보기는 분기마다 따로 환산해 합산), "
+                           "자산·부채·자본은 기간 말일 환율을 적용합니다.")
 TARGET = "KRW" if show_cur == "원화로 표기" else "USD"
 UNIT = "억원" if TARGET == "KRW" else "백만 달러"
 DIV = 1e8 if TARGET == "KRW" else 1e6
@@ -474,6 +558,16 @@ def factor(c, y, k):
             r, d = fx_latest(src, TARGET)
             fx_used[(src, TARGET)] = (r, d)
             return r
+        sel = (c.get("q_sel") or {}).get(y)
+        if sel:  # 분기 보기: 분기마다 그 분기 환율로 바꿔 더한 값과 같아지도록
+            if k not in sec.FLOW:
+                return qfactor(c, sel[-1], k)
+            raw = [((c.get("quarters") or {}).get("q", {}).get(lb) or {}).get(k) for lb in sel]
+            fs = [qfactor(c, lb, k) for lb in sel]
+            if any(v is None for v in raw) or any(f is None for f in fs):
+                return None
+            den = sum(raw)
+            return sum(v * f for v, f in zip(raw, fs)) / den if den else sum(fs) / len(fs)
         pe = c["period_end"].get(y)
         if not pe:
             return None
@@ -604,7 +698,9 @@ def fx_note() -> str:
         else:
             txt = ""
     else:
-        txt = ("연도별 환율 적용: 매출·이익은 회계연도 1년 평균, 자산·부채·자본은 결산일 기준환율(유럽중앙은행)."
+        txt = (("기간별 환율 적용: 매출·이익은 회계연도 1년 평균, 자산·부채·자본은 결산일 기준환율(유럽중앙은행)."
+                if MODE == "annual" else
+                "기간별 환율 적용: 매출·이익은 분기마다 그 분기 평균 환율로 바꿔 합산, 자산·부채·자본은 마지막 분기말 기준환율(유럽중앙은행).")
                if fx_used else "")
     if fx_fail:
         txt += f" 환율을 받지 못해 {', '.join(sorted(fx_fail))} 금액은 표시하지 않았습니다."
@@ -627,13 +723,18 @@ for c in cos:
         f'<td>{n_pct(now["op_margin"])}</td><td>{delta(dd("op_margin"), "%p")}</td>'
         f'<td>{n_pct(now["debt"])}</td><td>{delta(dd("debt"), "%p")}</td>'
         f'<td>{n_pct(now["roe"])}</td></tr>')
-_vs = "직전 4개 분기 대비" if MODE == "TTM" else "전년비"
+_vs = {"TTM": "직전 4개 분기 대비", "annual": "전년비"}.get(MODE, "전년 동기 대비")
 kpi = ('<table class="grid"><thead><tr>' + th("회사", left=True) + th("기준") + th("매출액", UNIT) + th(_vs)
        + th("영업이익", UNIT) + th("영업이익률") + th(_vs) + th("부채비율") + th(_vs) + th("ROE")
        + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
-note = ("▲ 상승 ▼ 하락 (" + ("직전 4개 분기 합계 대비" if MODE == "TTM" else "전년 대비") + "). "
+_cmp = {"TTM": "직전 4개 분기 합계 대비", "annual": "전년 대비"}.get(
+    MODE, "1년 전 같은 분기 대비" if N_Q == 1 else "1년 전 같은 분기들의 합계 대비")
+note = ("▲ 상승 ▼ 하락 (" + _cmp + "). "
         "비율 증감은 %p 단위이며, 성장률과 비율은 각 회사의 보고 통화 기준입니다."
-        + (" 부채비율·ROE는 최근 분기말 잔액 기준입니다." if MODE == "TTM" else ""))
+        + (" 부채비율·ROE는 마지막 분기말 잔액 기준입니다." if MODE != "annual" else "")
+        + (f" ROE·ROA·총자산회전율은 {N_Q}개 분기 실적을 1년 기준으로 환산했습니다 (×4/{N_Q})."
+           if MODE != "annual" and N_Q != 4 else "")
+        + (" 1년 전 데이터가 없는 분기는 증감이 '–'로 표시됩니다." if MODE in ("ONE", "RANGE", "PICK") else ""))
 fxn = fx_note()
 show(panel("주요 지표", kpi, note + (f"<br>{e(fxn)}" if fxn else "")))
 
@@ -650,6 +751,9 @@ with tab1:
 
     rk = []
     for r in dart.ranking(cos):
+        if r["key"] == "growth" and MODE != "annual":
+            r = {**r, "desc": "(이번 기간 매출 − 비교 기간 매출) ÷ 비교 기간 매출. 비교 기간은 "
+                 + ("직전 4개 분기." if MODE == "TTM" else "1년 전 같은 분기(들).")}
         if r["best"]:
             rk.append(f'<tr><td class="l co">{e(r["label"])}</td>{cell(r["best"])}{cell(r["worst"])}'
                       f'<td class="l wrap">{e(r["desc"])}</td></tr>')
@@ -704,7 +808,7 @@ with tab3:
         tr = "".join(f"<tr>{co_cell(c)}" + "".join(f"<td>{fmt(val(c, y))}</td>" for y in YRS) + "</tr>" for c in cos_annual)
         show(f'<div class="scroll"><table class="grid"><thead><tr>{th("회사", left=True)}'
              + "".join(th(str(y)) for y in YRS) + f"</tr></thead><tbody>{tr}</tbody></table></div>")
-    if MODE == "TTM":
+    if MODE != "annual":
         seg_note = f"연간 실적(사업보고서) 기준 {YRS[0]}~{YRS[-1]}년 추이입니다. "
     else:
         seg_note = ""
@@ -746,11 +850,11 @@ with tab4:
 # ───────────── 분기 실적 ─────────────
 
 with tab_q:
-    qcos = [c for c in cos if c.get("quarters")]
+    qcos = [c for c in cos_annual if c.get("quarters")]
     if not qcos:
         show('<div class="info">분기 데이터가 있는 회사가 없습니다.<br>국내 기업은 수집기를 다시 실행해 분기 데이터(kr_quarterly.json.gz)를 올리면 표시됩니다.</div>')
     else:
-        missing_q = [c["name"] for c in cos if not c.get("quarters")]
+        missing_q = [c["name"] for c in cos_annual if not c.get("quarters")]
         # 최근 분기 표
         rows_q = []
         for c in qcos:

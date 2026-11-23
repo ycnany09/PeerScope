@@ -41,8 +41,8 @@ def test_no_key_us_still_works(monkeypatch):
     assert at.multiselect[0].disabled and not at.multiselect[1].disabled
     assert any("DART_API_KEY" in c.value for c in at.caption)
     at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     assert "2025 회계연도 재무 비교" in md(at) and "MICRON TECHNOLOGY INC / 1개사" in md(at)
 
@@ -78,8 +78,8 @@ def test_empty_submit(monkeypatch):
 def test_full_report(monkeypatch):
     at = run_app(monkeypatch)
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)", "제이와이피엔터테인먼트 (035900)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     t = md(at)
     assert "<b>제이와이피엔터테인먼트</b> 조회 제외" in t
@@ -102,8 +102,8 @@ def test_full_report(monkeypatch):
 def test_single_company(monkeypatch):
     at = run_app(monkeypatch)
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     t = md(at)
     assert 'class="best"' not in t  # 1개사면 강조 없음
@@ -135,8 +135,8 @@ def test_kr_us_currency(monkeypatch):
     assert "MICRON TECHNOLOGY INC (MU)" in at.multiselect[1].options
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)"])
     at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)", "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD (TSM)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     t = md(at)
     rate = round(F.usdkrw("2026-11-19"), 6)
@@ -159,15 +159,15 @@ def test_kr_us_currency(monkeypatch):
     inv = 1 / round(1 / F.usdkrw("2026-11-19"), 6)
     assert f"1 USD = {inv:,.2f} KRW" in t
 
-    # 연도별 환율 → 원화 표기에서 마이크론 2025 매출은 FY 기간 평균
+    # 기간별 환율 → 원화 표기에서 마이크론 2025 매출은 FY 기간 평균
     at.radio(key="show_cur").set_value("원화로 표기")
-    at.radio(key="rate_mode").set_value("연도별 환율").run()
+    at.radio(key="rate_mode").set_value("기간별 환율").run()
     assert not at.exception, at.exception
     days = [d for d in F.fx_series_dates("2024-08-29", "2025-08-28")]
     avg = sum(F.usdkrw(d) for d in days) / len(days)
     t = md(at)
     assert f"<td>{eok_str(37.4e9 * avg)}</td>" in t
-    assert "연도별 환율 적용" in t
+    assert "기간별 환율 적용" in t
     # 자산은 결산일(2025-08-28, 목) 환율
     assert f"<td>{eok_str(82.8e9 * F.usdkrw('2025-08-28'))}</td>" in t
 

@@ -260,28 +260,62 @@ def us_quarters(facts_json: dict, n: int = 8) -> dict:
 
 # ───────────── 공통 계산 ─────────────
 
-def ttm(entry: dict) -> dict | None:
-    """최근 4개 분기 합계. 손익은 4개 분기가 다 있어야 계산, 재무상태는 최근 분기말."""
-    latest = entry["latest"]
-    four = last_n(latest, 4)
+ANNUALIZE = ("roe", "roa", "turnover")  # 손익 ÷ 잔액 지표: 기간 길이에 따라 크기가 달라져 1년 기준으로 환산
+
+
+def sort_labels(labels) -> list[str]:
+    return sorted(set(labels), key=parse)
+
+
+def contiguous(labels: list[str]) -> bool:
+    return all(shift(a, 1) == b for a, b in zip(labels, labels[1:]))
+
+
+def amounts(entry: dict, labels: list[str]) -> dict:
+    """여러 분기 금액. 손익은 고른 분기가 다 있어야 합계, 재무상태는 마지막 분기말 잔액."""
     q = entry["q"]
     out = {}
     for k_ in FLOW:
-        vs = [q.get(lb, {}).get(k_) for lb in four]
-        if all(v is not None for v in vs):
+        vs = [q.get(lb, {}).get(k_) for lb in labels]
+        if vs and all(v is not None for v in vs):
             out[k_] = sum(vs)
     for k_ in STOCK:
-        v = q.get(latest, {}).get(k_)
+        v = q.get(labels[-1], {}).get(k_) if labels else None
         if v is not None:
             out[k_] = v
-    if not any(k_ in out for k_ in FLOW):
+    return out
+
+
+def period_ratios(amount: dict, prev: dict | None, n: int) -> dict:
+    r = dart.ratios(amount, prev or None)
+    if n != 4:
+        for k_ in ANNUALIZE:
+            if r.get(k_) is not None:
+                r[k_] *= 4 / n
+    return r
+
+
+def combine(entry: dict, labels) -> dict | None:
+    """고른 분기들의 합계와, 1년 전 같은 분기들(비교 기간)의 합계. 손익이 하나도 없으면 None."""
+    labels = sort_labels(labels)
+    if not labels:
         return None
-    prev = {}
-    for k_ in FLOW:
-        vs = [q.get(lb, {}).get(k_) for lb in last_n(shift(latest, -4), 4)]
-        if all(v is not None for v in vs):
-            prev[k_] = sum(vs)
-    return {"amount": out, "ratio": dart.ratios(out, prev or None), "period": f"{four[0]}~{four[-1]}"}
+    cur = amounts(entry, labels)
+    if not any(k_ in cur for k_ in FLOW):
+        return None
+    prev_labels = [shift(lb, -4) for lb in labels]
+    prev = amounts(entry, prev_labels)
+    n = len(labels)
+    return {"labels": labels, "prev_labels": prev_labels, "amount": cur, "ratio": period_ratios(cur, prev, n),
+            "prev_amount": prev, "prev_ratio": period_ratios(prev, None, n)}
+
+
+def ttm(entry: dict) -> dict | None:
+    """최근 4개 분기 합계. 손익은 4개 분기가 다 있어야 계산, 재무상태는 최근 분기말."""
+    t = combine(entry, last_n(entry["latest"], 4))
+    if not t:
+        return None
+    return {"amount": t["amount"], "ratio": t["ratio"], "period": f"{t['labels'][0]}~{t['labels'][-1]}"}
 
 
 def yoy(entry: dict, lb: str, k_: str):

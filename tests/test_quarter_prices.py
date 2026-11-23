@@ -139,8 +139,8 @@ def test_app_quarter_position_price_tabs(tmp_path, monkeypatch):
     assert any("분기는 2026년 3분기까지" in c.value for c in at.caption)
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)"])
     at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     t = " ".join(m.value for m in at.markdown)
     # 분기 실적: CJ 2026 3Q 매출 1.5조 = 15,000억, 전년 동기비 ▲ 15.4%
@@ -174,8 +174,8 @@ def test_price_tab_hidden_without_keys(monkeypatch, tmp_path):
     at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
     at.run()
     at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
-    at.selectbox[0].set_value(2025)
     at.button[0].click().run()
+    F.annual(at, 2025)
     assert not at.exception, at.exception
     t = " ".join(m.value for m in at.markdown)
     assert "개인 PC에서 실행할 때만" in t
@@ -203,7 +203,6 @@ def test_app_ttm_mode(tmp_path, monkeypatch):
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
     at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
     at.run()
-    assert at.selectbox[0].value == "TTM"  # 기본값이 최근 4개 분기
     at.multiselect[0].set_value(["씨제이이엔엠 (035760)", "하이브 (352820)"])
     at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
     at.button[0].click().run()
@@ -213,11 +212,104 @@ def test_app_ttm_mode(tmp_path, monkeypatch):
     assert "직전 4개 분기 대비" in t
     # 주요 지표: CJ TTM 매출 55,000억, 직전 4개 분기 대비 ▲ 11.1%, 영업이익률 3,000/55,000 = 5.5%
     assert "<td>55,000</td>" in t and "▲ 11.1%" in t and "<td>5.5%</td>" in t
-    assert "<b>하이브</b> 최근 4개 분기 데이터가 없어 이 보기에서 제외" in t
+    assert "<b>하이브</b>" in t and "이 보기에서 제외" in t
     assert "기간 2025 4Q~2026 3Q" in t and "기간 2024 4Q~2025 3Q" in t
     # 5개년 추이는 연간 데이터 그대로 (하이브 포함)
     assert any("연간 실적(사업보고서) 기준" in c.value for c in at.caption)
     rate = round(F.usdkrw("2026-11-19"), 6)
     assert f"<td>{37.4e9 * rate / 1e8:,.0f}</td>" in t  # 마이크론 TTM 매출 (= FY2025)
-    at.radio(key="rate_mode").set_value("연도별 환율").run()
+    at.radio(key="rate_mode").set_value("기간별 환율").run()
     assert not at.exception, at.exception
+
+
+def test_combine_sums_and_annualizes():
+    e = {"latest": "2026Q3", "q": {
+        "2025Q1": {"rev": 100.0, "op": 10.0, "net": 5.0},
+        "2025Q3": {"rev": 120.0, "op": 12.0, "net": 6.0},
+        "2026Q1": {"rev": 150.0, "op": 30.0, "net": 20.0, "equity": 400.0, "assets": 1000.0, "liab": 600.0},
+        "2026Q3": {"rev": 170.0, "op": 34.0, "net": 30.0, "equity": 500.0, "assets": 1100.0, "liab": 600.0}}}
+    t = quarter.combine(e, ["2026Q3", "2026Q1"])  # 떨어진 두 분기, 순서 상관없음
+    assert t["labels"] == ["2026Q1", "2026Q3"] and t["prev_labels"] == ["2025Q1", "2025Q3"]
+    assert t["amount"]["rev"] == 320 and t["amount"]["equity"] == 500  # 잔액은 마지막 분기말
+    assert t["ratio"]["growth"] == pytest.approx(320 / 220 - 1)
+    assert t["ratio"]["roe"] == pytest.approx(50 / 500 * 2)  # 2개 분기 → ×4/2 연환산
+    assert t["ratio"]["debt"] == pytest.approx(600 / 500)  # 잔액끼리 비율은 그대로
+    one = quarter.combine(e, ["2026Q1"])
+    assert one["ratio"]["roe"] == pytest.approx(20 / 400 * 4)
+    assert one["ratio"]["growth"] == pytest.approx(150 / 100 - 1)
+    assert quarter.combine(e, ["2026Q2"]) is None  # 손익 없음
+    assert quarter.contiguous(["2025Q4", "2026Q1"]) and not quarter.contiguous(["2026Q1", "2026Q3"])
+
+
+def test_app_pick_quarters(tmp_path, monkeypatch):
+    annual = collect_kr.collect("K", 2025, http=H, out=str(tmp_path / "data" / "kr_financials.json.gz"),
+                                part=str(tmp_path / "p1.json"), pause=0, log=lambda *a: None)
+    collect_kr.collect_quarterly("K", "2026Q3", annual, http=H, out=str(tmp_path / "data" / "kr_quarterly.json.gz"),
+                                 part=str(tmp_path / "p2.json"), pause=0, log=lambda *a: None)
+    monkeypatch.setattr(requests, "get", F.fake_get)
+    monkeypatch.setenv("PEERSCOPE_KR_CACHE", str(tmp_path / "data" / "kr_financials.json.gz"))
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.secrets["SEC_USER_AGENT"] = "Kim Jimin jimin@example.com"
+    at.run()
+    at.multiselect[0].set_value(["씨제이이엔엠 (035760)"])
+    at.multiselect[1].set_value(["MICRON TECHNOLOGY INC (MU)"])
+    at.button[0].click().run()
+    assert at.radio(key="pmode").value == "최근 4개 분기"  # 기본값
+
+    def text():
+        assert not at.exception, at.exception
+        return " ".join(m.value for m in at.markdown)
+
+    # 한 분기: 기본은 두 회사 모두 있는 가장 최근 분기 (CJ·마이크론 공통 2025 3Q)
+    at.radio(key="pmode").set_value("한 분기").run()
+    t = text()
+    assert at.selectbox(key="p_q").value == "2025Q3"
+    assert "2025 3Q 재무 비교 (분기 실적)" in t and "전년 동기 대비" in t
+    assert "<td>13,000</td>" in t  # CJ 2025 3Q 매출
+    assert "▲ 44.9%" in t  # 마이크론 11.3B vs 7.8B
+    assert "실제 분기말 2025-08-28" in t
+    assert "×4/1" in t
+    # 2026 3Q: CJ 15,000억, 전년 동기 13,000억 대비 ▲ 15.4%, 영업이익률 900/15,000 = 6.0%. 마이크론은 데이터 없음
+    at.selectbox(key="p_q").set_value("2026Q3").run()
+    t = text()
+    assert "<td>15,000</td>" in t and "▲ 15.4%" in t and "<td>6.0%</td>" in t
+    assert "<b>MICRON TECHNOLOGY INC</b> 2026 3Q 데이터가 없어 이 보기에서 제외" in t
+
+    # 분기 범위 (시작·끝을 거꾸로 골라도 같은 결과): 2026 1Q~2Q = 26,000억, 전년 23,000억 대비 ▲ 13.0%
+    at.radio(key="pmode").set_value("분기 범위").run()
+    at.selectbox(key="p_from").set_value("2026Q2")
+    at.selectbox(key="p_to").set_value("2026Q1").run()
+    t = text()
+    assert "2026 1Q~2026 2Q 재무 비교 (2개 분기 합계)" in t
+    assert "<td>26,000</td>" in t and "▲ 13.0%" in t and "×4/2" in t
+
+    # 분기 범위 + 달러 + 기간별 환율: 분기마다 그 분기 평균 환율로 바꿔 더한 값
+    import fx
+    at.radio(key="show_cur").set_value("달러로 표기")
+    at.radio(key="rate_mode").set_value("기간별 환율").run()
+    t = text()
+    ser = fx.series("KRW", "USD", "2025-01-01", "2026-12-31")
+    usd = (1.25e12 * fx.period_average(ser, "2026-03-31", days=91)
+           + 1.35e12 * fx.period_average(ser, "2026-06-30", days=91)) / 1e6
+    assert f"<td>{usd:,.0f}</td>" in t
+    assert "분기마다 그 분기 평균 환율로 바꿔 합산" in t
+    at.radio(key="show_cur").set_value("원화로 표기")
+    at.radio(key="rate_mode").set_value("현재 환율").run()
+
+    # 분기 직접 선택: 2026 1Q + 2026 3Q = 27,500억, 전년 1Q+3Q 24,000억 대비 ▲ 14.6%
+    at.radio(key="pmode").set_value("분기 직접 선택").run()
+    at.multiselect(key="p_pick").set_value(["2026Q3", "2026Q1"]).run()
+    t = text()
+    assert "선택 분기 재무 비교 (2026 1Q, 2026 3Q 합계)" in t
+    assert "<td>27,500</td>" in t and "▲ 14.6%" in t
+    # 1년 전 데이터가 없는 분기 (2024 4Q → 2023 4Q 없음): 증감은 '–'
+    at.multiselect(key="p_pick").set_value(["2024Q4"]).run()
+    t = text()
+    assert "<td>13,500</td>" in t
+    # 아무것도 고르지 않으면 안내
+    at.multiselect(key="p_pick").set_value([]).run()
+    assert "합계로 볼 분기를 하나 이상 고르세요" in text()
+
+    # 사업연도로 돌아가면 연간 화면
+    F.annual(at, 2025)
+    assert "2025 회계연도 재무 비교" in text()
